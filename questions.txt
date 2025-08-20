@@ -1,0 +1,10 @@
+How many students are there?	college_2
+List all the singers.	concert_singer
+Show the names of students in the Computer Science department.	college_2
+What are the names of all departments?	department_management
+Find all pets owned by students.	pets_1
+Show countries with population greater than 100000000.	world_1
+What is the average age of singers?	concert_singer
+Count the number of pets by type.	pets_1
+Show student names with their pet names.	pets_1
+List singer names with their concert locations.	concert_singer

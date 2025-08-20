@@ -1,5 +1,14 @@
-# Byte-compiled / optimized / DLL files
+# ignore all data in data folder
+data/*
+!data/.gitkeep
+
+# Environment variables and configuration files
+.env
+
+# Python cache files
 __pycache__/
+*/__pycache__/
+**/__pycache__/
 *.py[codz]
 *$py.class
 
