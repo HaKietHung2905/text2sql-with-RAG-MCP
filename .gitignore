@@ -3,6 +3,14 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# ignore all data in data folder
+spider_data/*
+!spider_data/.gitkeep
+
+# ignore all chormadb
+chromadb/*
+!chromadb/.gitkeep
+
 # C extensions
 *.so
 
