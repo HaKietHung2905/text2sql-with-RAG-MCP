@@ -406,6 +406,4 @@ def example_queries():
             print(f"  Error: {results['error']}")
 
 if __name__ == "__main__":
-    # You can run main() for interactive mode or example_queries() for examples
-    main()
-    # example_queries()
+     main()

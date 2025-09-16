@@ -38,6 +38,16 @@ try:
 except ImportError:
     TEMPLATE_MANAGER_AVAILABLE = False
     print("⚠️  Template manager not available. Using basic prompts.")
+
+# ChromaDB integration
+try:
+    #from spider_chromadb_integration import SpiderChromaDBIntegration
+    from interactive_spider_query import InteractiveSpiderQuery
+    CHROMADB_AVAILABLE = True
+    print("✅ ChromaDB integration available")
+except ImportError:
+    CHROMADB_AVAILABLE = False
+    print("⚠️  ChromaDB integration not available")
     
 # LangChain integration (optional)
 try:
@@ -154,7 +164,6 @@ def rebuild_table_unit_col(valid_col_units, table_unit, kmap):
         col_unit_or_sql = rebuild_col_unit_col(valid_col_units, col_unit_or_sql, kmap)
     return table_type, col_unit_or_sql
 
-
 def rebuild_cond_unit_col(valid_col_units, cond_unit, kmap):
     if cond_unit is None:
         return cond_unit
@@ -163,13 +172,11 @@ def rebuild_cond_unit_col(valid_col_units, cond_unit, kmap):
     val_unit = rebuild_val_unit_col(valid_col_units, val_unit, kmap)
     return not_op, op_id, val_unit, val1, val2
 
-
 def rebuild_condition_col(valid_col_units, condition, kmap):
     for idx in range(len(condition)):
         if idx % 2 == 0:
             condition[idx] = rebuild_cond_unit_col(valid_col_units, condition[idx], kmap)
     return condition
-
 
 def rebuild_from_col(valid_col_units, from_, kmap):
     if from_ is None:
@@ -179,13 +186,11 @@ def rebuild_from_col(valid_col_units, from_, kmap):
     from_['conds'] = rebuild_condition_col(valid_col_units, from_['conds'], kmap)
     return from_
 
-
 def rebuild_group_by_col(valid_col_units, group_by, kmap):
     if group_by is None:
         return group_by
 
     return [rebuild_col_unit_col(valid_col_units, col_unit, kmap) for col_unit in group_by]
-
 
 def rebuild_order_by_col(valid_col_units, order_by, kmap):
     if order_by is None or len(order_by) == 0:
@@ -223,7 +228,6 @@ def rebuild_sql_col(valid_col_units, sql, kmap):
 
     return sql
 
-# Rebuild SQL functions for value evaluation
 def rebuild_cond_unit_val(cond_unit):
     if cond_unit is None or not DISABLE_VALUE:
         return cond_unit
@@ -239,7 +243,6 @@ def rebuild_cond_unit_val(cond_unit):
         val2 = rebuild_sql_val(val2)
     return not_op, op_id, val_unit, val1, val2
 
-# Rebuild SQL functions for foreign key evaluation
 def build_valid_col_units(table_units, schema):
     col_ids = [table_unit[1] for table_unit in table_units if table_unit[0] == TABLE_TYPE['table_unit']]
     prefixs = [col_id[:-2] for col_id in col_ids]
@@ -312,7 +315,6 @@ def eval_where(pred, label):
 
     return label_total, pred_total, cnt, cnt_wo_agg
 
-
 def eval_group(pred, label):
     pred_cols = [unit[1] for unit in pred['groupBy']]
     label_cols = [unit[1] for unit in label['groupBy']]
@@ -343,7 +345,6 @@ def eval_having(pred, label):
 
     return label_total, pred_total, cnt
 
-
 def eval_order(pred, label):
     pred_total = label_total = cnt = 0
     if len(pred['orderBy']) > 0:
@@ -365,7 +366,7 @@ def eval_and_or(pred, label):
         return 1,1,1
     return len(pred_ao),len(label_ao),0
 
-def eval_nested(pred, label):
+def eval_nested(pred, label, evaluator):
     label_total = 0
     pred_total = 0
     cnt = 0
@@ -374,13 +375,14 @@ def eval_nested(pred, label):
     if label is not None:
         label_total += 1
     if pred is not None and label is not None:
-        cnt += Evaluator().eval_exact_match(pred, label)
+        cnt += evaluator.eval_exact_match(pred, label)
     return label_total, pred_total, cnt
 
-def eval_IUEN(pred, label):
-    lt1, pt1, cnt1 = eval_nested(pred['intersect'], label['intersect'])
-    lt2, pt2, cnt2 = eval_nested(pred['except'], label['except'])
-    lt3, pt3, cnt3 = eval_nested(pred['union'], label['union'])
+def eval_IUEN(pred, label, evaluator):
+    """Evaluate INTERSECT, UNION, EXCEPT operations"""
+    lt1, pt1, cnt1 = eval_nested(pred['intersect'], label['intersect'], evaluator)
+    lt2, pt2, cnt2 = eval_nested(pred['except'], label['except'], evaluator)
+    lt3, pt3, cnt3 = eval_nested(pred['union'], label['union'], evaluator)
     label_total = lt1 + lt2 + lt3
     pred_total = pt1 + pt2 + pt3
     cnt = cnt1 + cnt2 + cnt3
@@ -397,6 +399,7 @@ def eval_keywords(pred, label):
         if k in label_keywords:
             cnt += 1
     return label_total, pred_total, cnt
+
 def has_agg(unit):
     return unit[0] != AGG_OPS.index('none')
 
@@ -441,7 +444,6 @@ def count_component1(sql):
 def print_formated_s(row_name, l, element_format):
     template = "{:20} " + ' '.join([element_format] * len(l))
     print(template.format(row_name, *l))
-
 
 def print_scores(scores, etype, include_turn_acc=True):
     turns = ['turn 1', 'turn 2', 'turn 3', 'turn 4', 'turn > 4']
@@ -526,972 +528,10 @@ def count_others(sql):
         count += 1
 
     return count
-#### Class BaseEvaluator ####
-class BaseEvaluator:
-    """Base evaluator class with original functionality"""
-    def __init__(self):
-        self.partial_scores = None
-        self.langchain_generator = None
-        if LANGCHAIN_AVAILABLE:
-            self._setup_langchain()
-
-    def _setup_langchain(self):
-        """Setup basic LangChain for text-to-SQL generation"""
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        env_path = os.path.join(current_dir, "..", ".env")
-        load_dotenv(env_path)
-        api_key = os.getenv("GOOGLE_API_KEY")
-        
-        if not api_key or api_key == "your-api-key-here":
-            print("⚠️  Google API key not found. LangChain will use pattern matching.")
-            return
-        
-        try:
-            llm = ChatGoogleGenerativeAI(
-                model="gemini-1.5-flash",
-                temperature=0.1,
-                google_api_key=api_key,
-                convert_system_message_to_human=True
-            )
-            
-            # Basic few-shot examples
-            examples = [
-                {"question": "How many students are there?", "sql": "SELECT COUNT(*) FROM student"},
-                {"question": "List all movies", "sql": "SELECT * FROM movie"},
-                {"question": "What are the teacher names?", "sql": "SELECT name FROM teacher"},
-                {"question": "Show countries with large population", "sql": "SELECT * FROM country WHERE population > 1000000"},
-            ]
-            
-            example_prompt = ChatPromptTemplate.from_messages([
-                ("human", "Question: {question}"),
-                ("ai", "SQL: {sql}")
-            ])
-            
-            few_shot_prompt = FewShotChatMessagePromptTemplate(
-                example_prompt=example_prompt,
-                examples=examples
-            )
-            
-            system_prompt = """You are an expert SQL developer. Convert natural language to SQL.           
-Database Schema: {schema}
-
-Rules:
-- Use only tables/columns from the schema
-- Generate correct SQL syntax
-- Keep queries simple
-- Return only SQL, no explanation"""
-
-            prompt = ChatPromptTemplate.from_messages([
-                ("system", system_prompt),
-                few_shot_prompt,
-                ("human", "Question: {question}\nSQL:")
-            ])
-            
-            self.langchain_generator = prompt | llm | StrOutputParser()
-            print("✅ Basic LangChain SQL generator initialized")
-            
-        except Exception as e:
-            print(f"⚠️  LangChain setup failed: {e}")
-            self.langchain_generator = None
-
-    def generate_sql_from_question(self, question, db_path):
-        """Generate SQL from natural language question using LangChain or patterns"""
-        print(f"🔍 Processing question: {question}")
-        print(f"📁 Database path: {db_path}")
-        
-        if not os.path.exists(db_path):
-            print(f"❌ Database file not found: {db_path}")
-            return "SELECT 1"
-        
-        schema_info = self._get_db_schema(db_path)
-        if not schema_info:
-            print("❌ No schema information extracted")
-            return "SELECT 1"
-        
-        if self.langchain_generator:
-            try:
-                schema_text = "Available Tables and Columns:\n"
-                for table, columns in schema_info.items():
-                    schema_text += f"Table '{table}': {', '.join(columns)}\n"
-                
-                result = self.langchain_generator.invoke({
-                    "question": question,
-                    "schema": schema_text
-                })
-                
-                cleaned_result = self._clean_sql_result(result)
-                validated_result = self._validate_and_fix_sql(cleaned_result, schema_info, question)
-                
-                return validated_result
-                
-            except Exception as e:
-                print(f"❌ LangChain generation failed: {e}")
-        
-        return self._pattern_generate_sql(question, schema_info)
-
-    def _get_db_schema(self, db_path):
-        """Get database schema information"""
-        if not os.path.exists(db_path):
-            return {}
-        
-        try:
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-            tables = [table[0] for table in cursor.fetchall()]
-            
-            schema_info = {}
-            for table in tables:
-                cursor.execute(f"PRAGMA table_info({table})")
-                columns = [col[1] for col in cursor.fetchall()]
-                schema_info[table] = columns
-            
-            conn.close()
-            return schema_info
-            
-        except Exception as e:
-            print(f"Error getting schema: {e}")
-            return {}
-
-    def _clean_sql_result(self, result):
-        """Clean LLM result to extract SQL"""
-        sql = result.strip()
-        
-        if sql.lower().startswith("sql:"):
-            sql = sql[4:].strip()
-        
-        if "```sql" in sql.lower():
-            start = sql.lower().find("```sql") + 6
-            end = sql.find("```", start)
-            if end != -1:
-                sql = sql[start:end].strip()
-        elif "```" in sql:
-            start = sql.find("```") + 3
-            end = sql.find("```", start)
-            if end != -1:
-                sql = sql[start:end].strip()
-       
-        #lines = sql.split('\n')
-        #for line in lines:
-        #    line = line.strip()
-        #    if line and not line.startswith('--'):
-        #        return line
-        
-        return sql.strip()
-
-    def _validate_and_fix_sql(self, sql, schema_info, question):
-        """Basic validation and fixing"""
-        sql_lower = sql.lower()
-        
-        from_match = re.search(r'from\s+(\w+)', sql_lower)
-        if from_match:
-            sql_table = from_match.group(1)
-            schema_tables_lower = [t.lower() for t in schema_info.keys()]
-            
-            if sql_table not in schema_tables_lower:
-                correct_table = self._find_best_table_match(question, schema_info)
-                sql = re.sub(r'(from\s+)\w+', f'\\1{correct_table}', sql, flags=re.IGNORECASE)
-        
-        return sql
-
-    def _find_best_table_match(self, question, schema_info):
-        """Find the best matching table for the question"""
-        question_lower = question.lower()
-        tables = list(schema_info.keys())
-        
-        for table in tables:
-            if table.lower() in question_lower:
-                return table
-        
-        return tables[0] if tables else "unknown_table"
-
-    def _pattern_generate_sql(self, question, schema_info):
-        """Generate SQL using simple patterns"""
-        question_lower = question.lower()
-        tables = list(schema_info.keys())
-        
-        if not tables:
-            return "SELECT 1"
-        
-        primary_table = self._find_best_table_match(question, schema_info)
-        
-        if re.search(r'how many|count', question_lower):
-            return f"SELECT COUNT(*) FROM {primary_table}"
-        elif re.search(r'list all|show all', question_lower):
-            return f"SELECT * FROM {primary_table}"
-        elif re.search(r'names?', question_lower):
-            columns = schema_info.get(primary_table, [])
-            name_col = next((col for col in columns if 'name' in col.lower()), columns[0] if columns else '*')
-            return f"SELECT {name_col} FROM {primary_table}"
-        else:
-            return f"SELECT * FROM {primary_table}"
-
-    # Keep all your existing evaluation methods
-    def eval_hardness(self, sql):
-        count_comp1_ = count_component1(sql)
-        count_comp2_ = count_component2(sql)
-        count_others_ = count_others(sql)
-
-        if count_comp1_ <= 1 and count_others_ == 0 and count_comp2_ == 0:
-            return "easy"
-        elif (count_others_ <= 2 and count_comp1_ <= 1 and count_comp2_ == 0) or \
-                (count_comp1_ <= 2 and count_others_ < 2 and count_comp2_ == 0):
-            return "medium"
-        elif (count_others_ > 2 and count_comp1_ <= 2 and count_comp2_ == 0) or \
-                (2 < count_comp1_ <= 3 and count_others_ <= 2 and count_comp2_ == 0) or \
-                (count_comp1_ <= 1 and count_others_ == 0 and count_comp2_ <= 1):
-            return "hard"
-        else:
-            return "extra"
-
-    def eval_exact_match(self, pred, label):
-        partial_scores = self.eval_partial_match(pred, label)
-        self.partial_scores = partial_scores
-
-        for key, score in partial_scores.items():
-            if score['f1'] != 1:
-                return 0
-
-        if len(label['from']['table_units']) > 0:
-            label_tables = sorted(label['from']['table_units'])
-            pred_tables = sorted(pred['from']['table_units'])
-            return label_tables == pred_tables
-        return 1
-
-    def eval_partial_match(self, pred, label):
-        res = {}
-
-        label_total, pred_total, cnt, cnt_wo_agg = eval_sel(pred, label)
-        acc, rec, f1 = get_scores(cnt, pred_total, label_total)
-        res['select'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
-        acc, rec, f1 = get_scores(cnt_wo_agg, pred_total, label_total)
-        res['select(no AGG)'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
-
-        label_total, pred_total, cnt, cnt_wo_agg = eval_where(pred, label)
-        acc, rec, f1 = get_scores(cnt, pred_total, label_total)
-        res['where'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
-        acc, rec, f1 = get_scores(cnt_wo_agg, pred_total, label_total)
-        res['where(no OP)'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
-
-        label_total, pred_total, cnt = eval_group(pred, label)
-        acc, rec, f1 = get_scores(cnt, pred_total, label_total)
-        res['group(no Having)'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
-
-        label_total, pred_total, cnt = eval_having(pred, label)
-        acc, rec, f1 = get_scores(cnt, pred_total, label_total)
-        res['group'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
-
-        label_total, pred_total, cnt = eval_order(pred, label)
-        acc, rec, f1 = get_scores(cnt, pred_total, label_total)
-        res['order'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
-
-        label_total, pred_total, cnt = eval_and_or(pred, label)
-        acc, rec, f1 = get_scores(cnt, pred_total, label_total)
-        res['and/or'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
-
-        label_total, pred_total, cnt = eval_IUEN(pred, label)
-        acc, rec, f1 = get_scores(cnt, pred_total, label_total)
-        res['IUEN'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
-
-        label_total, pred_total, cnt = eval_keywords(pred, label)
-        acc, rec, f1 = get_scores(cnt, pred_total, label_total)
-        res['keywords'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
-
-        return res
-
-#### Class Evaluator ####
-class Evaluator:
-    """A simple evaluator"""
-    def __init__(self):
-        self.partial_scores = None
-        # LangChain SQL generator setup
-        self.langchain_generator = None
-        if LANGCHAIN_AVAILABLE:
-            self._setup_langchain()
-
-    def _setup_langchain(self):
-        """Setup LangChain for text-to-SQL generation"""
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        env_path = os.path.join(current_dir, "..", ".env")
-        load_dotenv(env_path)
-        api_key = os.getenv("GOOGLE_API_KEY")
-        
-        if not api_key or api_key == "your-api-key-here":
-            print("⚠️  Google API key not found. LangChain will use pattern matching.")
-            return
-        
-        try:
-            # Initialize LLM
-            llm = ChatGoogleGenerativeAI(
-                model="gemini-1.5-flash",  # Using Gemini model
-                temperature=0.1,
-                google_api_key=api_key,
-                convert_system_message_to_human=True  # Important for Gemini compatibility
-            )
-            
-            # Few-shot examples
-            examples = [
-                {"question": "How many students are there?", "sql": "SELECT COUNT(*) FROM student"},
-                {"question": "List all movies", "sql": "SELECT * FROM movie"},
-                {"question": "What are the teacher names?", "sql": "SELECT name FROM teacher"},
-                {"question": "Show countries with large population", "sql": "SELECT * FROM country WHERE population > 1000000"},
-                {"question": "Show all head records", "sql": "SELECT * FROM head"},
-                {"question": "List all departments", "sql": "SELECT * FROM department"},
-                {"question": "Show management information", "sql": "SELECT * FROM management"},
-                {"question": "Show all activities", "sql": "SELECT * FROM activity"}
-            ]
-            
-            # Create prompt template
-            example_prompt = ChatPromptTemplate.from_messages([
-                ("human", "Question: {question}"),
-                ("ai", "SQL: {sql}")
-            ])
-            
-            few_shot_prompt = FewShotChatMessagePromptTemplate(
-                example_prompt=example_prompt,
-                examples=examples
-            )
-            
-            system_prompt = """You are an expert SQL developer. Convert natural language to SQL.           
-                                Database Schema:
-                                {schema}
-
-                                Rules:
-                                - Use only tables/columns from the schema
-                                - Generate correct SQL syntax
-                                - Keep queries simple
-                                - If the question mentions words that might relate to table names, find the best matching table from the schema
-                                - Return only SQL, no explanation"""
-
-            prompt = ChatPromptTemplate.from_messages([
-                ("system", system_prompt),
-                few_shot_prompt,
-                ("human", "Question: {question}\nSQL:")
-            ])
-            
-            # Create chain
-            self.langchain_generator = prompt | llm | StrOutputParser()
-            print("✅ LangChain SQL generator initialized")
-            
-        except Exception as e:
-            print(f"⚠️  LangChain setup failed: {e}")
-            self.langchain_generator = None
-
-    def generate_sql_from_question(self, question, db_path):
-        """Generate SQL from natural language question using LangChain or patterns"""
-        print(f"🔍 Processing question: {question}")
-        print(f"📁 Database path: {db_path}")
-        
-        # Check if database file exists
-        if not os.path.exists(db_path):
-            print(f"❌ Database file not found: {db_path}")
-            # Try alternative path structures
-            alternative_paths = [
-                db_path.replace('.sqlite', '.db'),
-                db_path + '.db',
-                db_path.replace('_database.sqlite', '.sqlite'),
-            ]
-            for alt_path in alternative_paths:
-                if os.path.exists(alt_path):
-                    print(f"✅ Found alternative path: {alt_path}")
-                    db_path = alt_path
-                    break
-            else:
-                print(f"❌ No valid database found. Checked paths:")
-                for path in [db_path] + alternative_paths:
-                    print(f"   - {path}: {'EXISTS' if os.path.exists(path) else 'NOT FOUND'}")
-                return "SELECT 1"
-        
-        # Get database schema
-        schema_info = self._get_db_schema(db_path)
-        print(f"📊 Schema info: {schema_info}")
-        
-        if not schema_info:
-            print("❌ No schema information extracted")
-            return "SELECT 1"
-        
-        print(f"✅ Found {len(schema_info)} tables: {list(schema_info.keys())}")
-        
-        # Use LangChain if available
-        if self.langchain_generator:
-            try:
-                schema_text = "Available Tables and Columns:\n"
-                for table, columns in schema_info.items():
-                    schema_text += f"Table '{table}': {', '.join(columns)}\n"
-                
-                print(f"📝 Schema text for LLM:\n{schema_text}")
-                
-                print("🤖 Invoking Gemini...")
-                result = self.langchain_generator.invoke({
-                    "question": question,
-                    "schema": schema_text
-                })
-                
-                print(f"🔄 Raw LLM result: {result}")
-                cleaned_result = self._clean_sql_result(result)
-                print(f"✨ Cleaned result: {cleaned_result}")
-                
-                # Validate and fix the SQL against the actual schema
-                validated_result = self._validate_and_fix_sql(cleaned_result, schema_info, question)
-                print(f"🔧 Final result: {validated_result}")
-                
-                return validated_result
-                
-            except Exception as e:
-                print(f"❌ LangChain generation failed: {e}")
-                import traceback
-                traceback.print_exc()
-        else:
-            print("⚠️  No LangChain generator available")
-        
-        # Fallback to pattern matching
-        print("🔄 Using pattern matching fallback...")
-        pattern_result = self._pattern_generate_sql(question, schema_info)
-        print(f"🎯 Pattern result: {pattern_result}")
-        return pattern_result
-
-    def _get_db_schema(self, db_path):
-        """Get database schema information"""
-        if not os.path.exists(db_path):
-            return {}
-        
-        try:
-            print("Getting schema for:", db_path)
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            print("Connected to database successfully")
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-            tables = [table[0] for table in cursor.fetchall()]
-            
-            schema_info = {}
-            for table in tables:
-                cursor.execute(f"PRAGMA table_info({table})")
-                columns = [col[1] for col in cursor.fetchall()]
-                schema_info[table] = columns
-            
-            conn.close()
-            return schema_info
-            
-        except Exception as e:
-            print(f"Error getting schema: {e}")
-            return {}
     
-    def _pattern_generate_sql(self, question, schema_info):
-        """Generate SQL using simple patterns"""
-        question_lower = question.lower()
-        print("🎯 Pattern matching for question:", question_lower)
-        tables = list(schema_info.keys())
-        print("🎯 Available tables:", tables)
-        
-        if not tables:
-            return "SELECT 1"
-        
-        primary_table = tables[0]
-        print(f"🎯 Default table: {primary_table}")
-        
-        # Find mentioned table - more comprehensive matching
-        for table in tables:
-            if table.lower() in question_lower:
-                primary_table = table
-                print(f"✅ Found exact table match '{table}' in question")
-                break
-        
-        # Check for table name variations and semantic matching
-        if primary_table == tables[0]:  # No exact match found
-            question_words = question_lower.split()
-            print(f"🎯 Checking question words: {question_words}")
-            for word in question_words:
-                for table in tables:
-                    # Check for partial matches or semantic matches
-                    if (word in table.lower() or table.lower() in word or 
-                        self._semantic_table_match(word, table.lower())):
-                        primary_table = table
-                        print(f"✅ Found semantic table match '{table}' for word '{word}'")
-                        break
-                if primary_table != tables[0]:
-                    break
-        
-        print(f"🎯 Final selected table: {primary_table}")
-        
-        # Pattern matching
-        if re.search(r'how many|count', question_lower):
-            result = f"SELECT COUNT(*) FROM {primary_table}"
-        elif re.search(r'list all|show all|all.*records', question_lower):
-            result = f"SELECT * FROM {primary_table}"
-        elif re.search(r'names?', question_lower):
-            columns = schema_info.get(primary_table, [])
-            name_col = next((col for col in columns if 'name' in col.lower()), columns[0] if columns else '*')
-            result = f"SELECT {name_col} FROM {primary_table}"
-        else:
-            result = f"SELECT * FROM {primary_table}"
-        
-        print(f"🎯 Generated SQL: {result}")
-        return result
-    
-    def _semantic_table_match(self, word, table):
-        """Check for semantic matches between question words and table names"""
-        # Common semantic mappings
-        mappings = {
-            'head': ['head', 'leader', 'manager', 'chief', 'records'],
-            'department': ['dept', 'department', 'division'],
-            'management': ['management', 'manager', 'admin'],
-            'activity': ['activity', 'action', 'event', 'task', 'head', 'records'],  # Added head -> activity mapping
-            'student': ['student', 'pupil', 'learner'],
-            'faculty': ['faculty', 'teacher', 'professor', 'staff'],
-            'course': ['course', 'class', 'subject'],
-            'employee': ['employee', 'worker', 'staff'],
-            'participates_in': ['participate', 'participation', 'involved'],
-            'faculty_participates_in': ['faculty', 'participate', 'staff']
-        }
-        
-        print(f"🔍 Checking semantic match: word='{word}' vs table='{table}'")
-        
-        for table_key, synonyms in mappings.items():
-            if table_key in table and word in synonyms:
-                print(f"✅ Found semantic match: {word} -> {table} via {table_key}")
-                return True
-        return False
-    
-    def _clean_sql_result(self, result):
-        """Clean LLM result to extract SQL"""
-        sql = result.strip()
-        
-        if sql.lower().startswith("sql:"):
-            sql = sql[4:].strip()
-        
-        if "```sql" in sql.lower():
-            start = sql.lower().find("```sql") + 6
-            end = sql.find("```", start)
-            if end != -1:
-                sql = sql[start:end].strip()
-        elif "```" in sql:
-            start = sql.find("```") + 3
-            end = sql.find("```", start)
-            if end != -1:
-                sql = sql[start:end].strip()
-        
-        lines = sql.split('\n')
-        for line in lines:
-            line = line.strip()
-            if line and not line.startswith('--'):
-                return line
-        
-        return sql.strip()
-    
-    def _validate_and_fix_sql(self, sql, schema_info, question):
-        """Validate and fix SQL to ensure it uses correct table names"""
-        print(f"🔧 Validating SQL: {sql}")
-        print(f"🔧 Available tables: {list(schema_info.keys())}")
-        
-        sql_lower = sql.lower()
-        
-        # Extract table name from SQL
-        from_match = re.search(r'from\s+(\w+)', sql_lower)
-        if from_match:
-            sql_table = from_match.group(1)
-            print(f"🔧 SQL uses table: {sql_table}")
-            
-            # Check if the table exists in schema
-            schema_tables_lower = [t.lower() for t in schema_info.keys()]
-            print(f"🔧 Schema tables (lowercase): {schema_tables_lower}")
-            
-            if sql_table not in schema_tables_lower:
-                print(f"⚠️  Table '{sql_table}' not found in schema. Fixing...")
-                
-                # Find the correct table based on question context
-                correct_table = self._find_best_table_match(question, schema_info)
-                print(f"🔧 Selected correct table: {correct_table}")
-                
-                # Replace the table name in SQL
-                sql = re.sub(
-                    r'(from\s+)\w+', 
-                    f'\\1{correct_table}', 
-                    sql, 
-                    flags=re.IGNORECASE
-                )
-                print(f"🔧 Fixed SQL: {sql}")
-            else:
-                print(f"✅ Table '{sql_table}' exists in schema")
-        
-        return sql
-    
-    def _find_best_table_match(self, question, schema_info):
-        """Find the best matching table for the question"""
-        question_lower = question.lower()
-        tables = list(schema_info.keys())
-        
-        # Direct table name match
-        for table in tables:
-            if table.lower() in question_lower:
-                return table
-        
-        # Semantic matching
-        question_words = question_lower.split()
-        for word in question_words:
-            for table in tables:
-                if self._semantic_table_match(word, table.lower()):
-                    return table
-        
-        # If no match found, return the first table
-        return tables[0] if tables else "unknown_table"
-        return tables[0] if tables else "unknown_table"
-        
-    def eval_hardness(self, sql):
-        count_comp1_ = count_component1(sql)
-        count_comp2_ = count_component2(sql)
-        count_others_ = count_others(sql)
-
-        if count_comp1_ <= 1 and count_others_ == 0 and count_comp2_ == 0:
-            return "easy"
-        elif (count_others_ <= 2 and count_comp1_ <= 1 and count_comp2_ == 0) or \
-                (count_comp1_ <= 2 and count_others_ < 2 and count_comp2_ == 0):
-            return "medium"
-        elif (count_others_ > 2 and count_comp1_ <= 2 and count_comp2_ == 0) or \
-                (2 < count_comp1_ <= 3 and count_others_ <= 2 and count_comp2_ == 0) or \
-                (count_comp1_ <= 1 and count_others_ == 0 and count_comp2_ <= 1):
-            return "hard"
-        else:
-            return "extra"
-
-    def eval_exact_match(self, pred, label):
-        partial_scores = self.eval_partial_match(pred, label)
-        self.partial_scores = partial_scores
-
-        for key, score in partial_scores.items():
-            if score['f1'] != 1:
-                return 0
-
-        if len(label['from']['table_units']) > 0:
-            label_tables = sorted(label['from']['table_units'])
-            pred_tables = sorted(pred['from']['table_units'])
-            return label_tables == pred_tables
-        return 1
-
-    def eval_partial_match(self, pred, label):
-        res = {}
-
-        label_total, pred_total, cnt, cnt_wo_agg = eval_sel(pred, label)
-        acc, rec, f1 = get_scores(cnt, pred_total, label_total)
-        res['select'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
-        acc, rec, f1 = get_scores(cnt_wo_agg, pred_total, label_total)
-        res['select(no AGG)'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
-
-        label_total, pred_total, cnt, cnt_wo_agg = eval_where(pred, label)
-        acc, rec, f1 = get_scores(cnt, pred_total, label_total)
-        res['where'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
-        acc, rec, f1 = get_scores(cnt_wo_agg, pred_total, label_total)
-        res['where(no OP)'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
-
-        label_total, pred_total, cnt = eval_group(pred, label)
-        acc, rec, f1 = get_scores(cnt, pred_total, label_total)
-        res['group(no Having)'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
-
-        label_total, pred_total, cnt = eval_having(pred, label)
-        acc, rec, f1 = get_scores(cnt, pred_total, label_total)
-        res['group'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
-
-        label_total, pred_total, cnt = eval_order(pred, label)
-        acc, rec, f1 = get_scores(cnt, pred_total, label_total)
-        res['order'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
-
-        label_total, pred_total, cnt = eval_and_or(pred, label)
-        acc, rec, f1 = get_scores(cnt, pred_total, label_total)
-        res['and/or'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
-
-        label_total, pred_total, cnt = eval_IUEN(pred, label)
-        acc, rec, f1 = get_scores(cnt, pred_total, label_total)
-        res['IUEN'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
-
-        label_total, pred_total, cnt = eval_keywords(pred, label)
-        acc, rec, f1 = get_scores(cnt, pred_total, label_total)
-        res['keywords'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
-
-        return res
-
-class EnhancedEvaluator(BaseEvaluator):
-    """Enhanced evaluator with template manager integration"""
-    
-    def __init__(self, prompt_type=PromptType.ENHANCED, enable_debugging=False):
-        super().__init__()
-        self.prompt_type = prompt_type
-        self.enable_debugging = enable_debugging
-        
-        # Initialize template manager if available
-        if TEMPLATE_MANAGER_AVAILABLE:
-            self.template_manager = TemplateManager()
-            self.specialized_prompts = SpecializedPrompts()
-            print(f"✅ Using {prompt_type.value} prompting strategy")
-        else:
-            self.template_manager = None
-            self.specialized_prompts = None
-        
-        # Override LangChain setup with enhanced templates
-        if LANGCHAIN_AVAILABLE and self.template_manager:
-            self._setup_enhanced_langchain()
-        
-        # Statistics tracking
-        self.generation_stats = {
-            'total_queries': 0,
-            'successful_generations': 0,
-            'template_corrections': 0,
-            'pattern_fallbacks': 0,
-            'syntax_errors': 0
-        }
-
-    def _setup_enhanced_langchain(self):
-        """Setup enhanced LangChain with template manager"""
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        env_path = os.path.join(current_dir, "..", ".env")
-        load_dotenv(env_path)
-        api_key = os.getenv("GOOGLE_API_KEY")
-        
-        if not api_key or api_key == "your-api-key-here":
-            print("⚠️  Google API key not found. Using pattern matching fallback.")
-            return
-        
-        try:
-            llm = ChatGoogleGenerativeAI(
-                model="gemini-1.5-flash",
-                temperature=0.1,
-                google_api_key=api_key,
-                convert_system_message_to_human=True
-            )
-            
-            # Get enhanced prompt template from template manager
-            template_str = self.template_manager.get_template(self.prompt_type)
-            print(f"📝 Using {self.prompt_type.value} template")
-            print ("Template", template_str) 
-            # Create LangChain prompt
-            prompt = ChatPromptTemplate.from_template(template_str)
-            
-            # Create chain
-            self.langchain_generator = prompt | llm | StrOutputParser()
-            print("✅ Enhanced LangChain SQL generator initialized")
-            
-        except Exception as e:
-            print(f"⚠️  Enhanced LangChain setup failed: {e}")
-            self.langchain_generator = None
-
-    def generate_sql_from_question(self, question, db_path):
-        """Enhanced SQL generation with template manager"""
-        self.generation_stats['total_queries'] += 1
-        
-        print(f"🔍 Enhanced processing: {question}")
-        print(f"📁 Database: {db_path}")
-        
-        if not os.path.exists(db_path):
-            print(f"❌ Database file not found: {db_path}")
-            return "SELECT 1"
-        
-        schema_info = self._get_db_schema(db_path)
-        if not schema_info:
-            print("❌ No schema information extracted")
-            return "SELECT 1"
-        
-        print(f"✅ Found {len(schema_info)} tables: {list(schema_info.keys())}")
-        
-        # Format schema for prompt
-        schema_text = self._format_schema_for_prompt(schema_info)
-        
-        # Try LangChain generation with enhanced prompts
-        if self.langchain_generator:
-            try:
-                print(f"🤖 Using {self.prompt_type.value} prompting strategy...")
-                
-                result = self.langchain_generator.invoke({
-                    "question": question,
-                    "schema": schema_text
-                })
-                
-                print(f"🔄 LLM result: {result}")
-                cleaned_sql = self._clean_sql_result(result)
-                print(f"✨ Cleaned SQL: {cleaned_sql}")
-                
-                # Enhanced validation with template manager
-                #validated_sql = self._validate_and_enhance_sql(cleaned_sql, schema_info, question)
-                validated_sql = self._validate_and_enhance_sql(cleaned_sql, schema_info, question)
-                 
-                #if validated_sql != cleaned_sql:
-                self.generation_stats['template_corrections'] += 1
-                print(f"🔧 Template correction applied: {validated_sql}")
-                
-                self.generation_stats['successful_generations'] += 1
-                return validated_sql
-                
-            except Exception as e:
-                print(f"❌ Enhanced LangChain generation failed: {e}")
-                self.generation_stats['syntax_errors'] += 1
-                if self.enable_debugging:
-                    import traceback
-                    traceback.print_exc()
-        
-        # Fallback to enhanced pattern matching
-        print("🔄 Using enhanced pattern matching fallback...")
-        self.generation_stats['pattern_fallbacks'] += 1
-        return self._enhanced_pattern_generate_sql(question, schema_info)
-
-    def _format_schema_for_prompt(self, schema_info):
-        """Format schema information for prompt templates"""
-        if not schema_info:
-            return "No schema available"
-        
-        schema_lines = []
-        for table, columns in schema_info.items():
-            schema_lines.append(f"table: {table} [{', '.join(columns)}]")
-        
-        return "\n".join(schema_lines)
-
-    def _validate_and_enhance_sql(self, sql, schema_info, question):
-        """Enhanced validation using template manager patterns"""
-        if not sql or sql == "SELECT 1":
-            return sql
-        
-        # Basic validation
-        issues = self._find_sql_issues(sql, schema_info)
-        
-        if not issues:
-            return sql
-        
-        print(f"🔍 Found {len(issues)} validation issues: {[i['type'] for i in issues]}")
-        
-        # Try to fix using specialized prompts if available
-        if self.specialized_prompts and self.langchain_generator and self.enable_debugging:
-            try:
-                debug_template = self.specialized_prompts.get_debugging_prompt()
-                
-                # Create debugging chain
-                llm = ChatGoogleGenerativeAI(
-                    model="gemini-1.5-flash",
-                    temperature=0.1,
-                    google_api_key=os.getenv("GOOGLE_API_KEY"),
-                    convert_system_message_to_human=True
-                )
-                
-                debug_prompt = ChatPromptTemplate.from_template(debug_template)
-                debug_chain = debug_prompt | llm | StrOutputParser()
-                
-                schema_text = self._format_schema_for_prompt(schema_info)
-                error_msg = "; ".join([f"{i['type']}: {i.get('message', 'Issue detected')}" for i in issues])
-                
-                corrected_result = debug_chain.invoke({
-                    "question": question,
-                    "schema": schema_text,
-                    "sql": sql,
-                    "error": error_msg
-                })
-                
-                corrected_sql = self._clean_sql_result(corrected_result)
-                print(f"🔧 Debugging prompt result: {corrected_sql}")
-                
-                return corrected_sql
-                
-            except Exception as e:
-                print(f"⚠️  Debugging prompt failed: {e}")
-        
-        # Fallback to rule-based corrections
-        return self._apply_rule_based_corrections(sql, issues, schema_info, question)
-
-    def _find_sql_issues(self, sql, schema_info):
-        """Find issues in the generated SQL"""
-        issues = []
-        sql_lower = sql.lower()
-        
-        # Check table existence
-        from_match = re.search(r'from\s+(\w+)', sql_lower)
-        if from_match:
-            table_name = from_match.group(1)
-            if table_name not in [t.lower() for t in schema_info.keys()]:
-                issues.append({
-                    'type': 'table_not_found',
-                    'table': table_name,
-                    'message': f"Table '{table_name}' not found in schema"
-                })
-        
-        return issues
-
-    def _apply_rule_based_corrections(self, sql, issues, schema_info, question):
-        """Apply rule-based corrections using template manager patterns"""
-        corrected_sql = sql
-        
-        for issue in issues:
-            if issue['type'] == 'table_not_found':
-                correct_table = self._find_best_table_match(question, schema_info)
-                pattern = r'(from\s+)\w+'
-                corrected_sql = re.sub(pattern, f'\\1{correct_table}', corrected_sql, flags=re.IGNORECASE)
-                print(f"🔧 Corrected table: {issue['table']} → {correct_table}")
-        
-        return corrected_sql
-
-    def _enhanced_pattern_generate_sql(self, question, schema_info):
-        """Enhanced pattern-based SQL generation using template manager"""
-        question_lower = question.lower()
-        tables = list(schema_info.keys())
-        
-        if not tables:
-            return "SELECT 1"
-        
-        # Use pattern recognition from template manager
-        if self.template_manager:
-            patterns = self.template_manager.common_patterns
-            
-            # Check for pattern matches
-            for pattern, sql_template in patterns.items():
-                if pattern.lower() in question_lower:
-                    print(f"🎯 Matched pattern: '{pattern}' → {sql_template}")
-                    
-                    # Customize the template for this specific question
-                    customized_sql = self._customize_sql_template(sql_template, question, schema_info)
-                    return customized_sql
-        
-        # Fallback to basic pattern matching
-        return super()._pattern_generate_sql(question, schema_info)
-
-    def _customize_sql_template(self, template, question, schema_info):
-        """Customize SQL template based on question and schema"""
-        primary_table = self._find_best_table_match(question, schema_info)
-        customized = template.replace('table', primary_table)
-        
-        if 'column' in customized:
-            relevant_column = self._find_relevant_column(question, primary_table, schema_info)
-            customized = customized.replace('column', relevant_column)
-        
-        return customized
-
-    def _find_relevant_column(self, question, table, schema_info):
-        """Find the most relevant column based on question context"""
-        if table not in schema_info:
-            return '*'
-        
-        question_lower = question.lower()
-        columns = schema_info[table]
-        
-        # Look for columns mentioned in question
-        for col in columns:
-            if col.lower() in question_lower:
-                return col
-        
-        # Look for name columns
-        for col in columns:
-            if 'name' in col.lower():
-                return col
-        
-        return columns[0] if columns else '*'
-
-    def get_generation_statistics(self):
-        """Get statistics about SQL generation performance"""
-        total = self.generation_stats['total_queries']
-        if total == 0:
-            return {}
-        
-        return {
-            'total_queries': total,
-            'success_rate': self.generation_stats['successful_generations'] / total,
-            'correction_rate': self.generation_stats['template_corrections'] / total,
-            'fallback_rate': self.generation_stats['pattern_fallbacks'] / total,
-            'error_rate': self.generation_stats['syntax_errors'] / total,
-        }
-
-def evaluate(gold, predict, db_dir, etype, kmaps, plug_value, keep_distinct, progress_bar_for_each_datapoint, use_langchain=False, questions_file=None, prompt_type="enhanced", enable_debugging=False):
+def evaluate(gold, predict, db_dir, etype, kmaps, plug_value, keep_distinct, progress_bar_for_each_datapoint, 
+             use_langchain=False, questions_file=None, prompt_type="enhanced", enable_debugging=False,
+             use_chromadb=False, chromadb_config=None):
     # LangChain mode: generate predictions from questions
     if use_langchain and questions_file:
         print("🤖 LangChain Mode: Generating SQL from natural language questions")
@@ -1501,8 +541,12 @@ def evaluate(gold, predict, db_dir, etype, kmaps, plug_value, keep_distinct, pro
             return {}
         
         # Load questions and generate predictions
-        evaluator = create_evaluator(prompt_type=prompt_type, enable_debugging=enable_debugging)
-    
+        evaluator = create_evaluator(
+            prompt_type=prompt_type, 
+            enable_debugging=enable_debugging,
+            use_chromadb=use_chromadb,
+            chromadb_config=chromadb_config
+        )
         
         with open(questions_file, 'r') as f:
             question_lines = f.readlines()
@@ -1547,6 +591,15 @@ def evaluate(gold, predict, db_dir, etype, kmaps, plug_value, keep_distinct, pro
         plist = [generated_predictions]
         
         print(f"✅ Generated {len(generated_predictions)} SQL predictions using LangChain")
+        
+        # Print ChromaDB statistics if available
+        if use_chromadb and hasattr(evaluator, 'get_retrieval_statistics'):
+            retrieval_stats = evaluator.get_retrieval_statistics()
+            print("\n📊 ChromaDB Retrieval Statistics:")
+            print(f"  Queries with retrieval: {retrieval_stats.get('queries_with_retrieval', 0)}")
+            print(f"  Successful retrievals: {retrieval_stats.get('successful_retrievals', 0)}")
+            print(f"  Retrieval helped: {retrieval_stats.get('retrieval_helped', 0)}")
+            print(f"  Average similarity: {retrieval_stats.get('average_similarity', 0.0):.3f}")
     else:
         with open(predict) as f:
             plist = []
@@ -1560,8 +613,6 @@ def evaluate(gold, predict, db_dir, etype, kmaps, plug_value, keep_distinct, pro
 
             if len(pseq_one) != 0:
                 plist.append(pseq_one)
-
-
 
     with open(gold) as f:
         glist = []
@@ -1583,7 +634,16 @@ def evaluate(gold, predict, db_dir, etype, kmaps, plug_value, keep_distinct, pro
 
     assert len(plist) == len(glist), "number of sessions must equal"
 
-    evaluator = Evaluator()
+    if use_chromadb and CHROMADB_AVAILABLE and TEMPLATE_MANAGER_AVAILABLE:
+        evaluator = ChromaDBEvaluator(
+            prompt_type=PromptType.ENHANCED,
+            enable_debugging=False,
+            use_chromadb=use_chromadb,
+            chromadb_config=chromadb_config
+        )
+    else:
+        evaluator = BaseEvaluator()
+
     turns = ['turn 1', 'turn 2', 'turn 3', 'turn 4', 'turn > 4']
     levels = ['easy', 'medium', 'hard', 'extra', 'all', 'joint_all']
 
@@ -1845,8 +905,8 @@ def build_foreign_key_map_from_json(table):
         tables[entry['db_id']] = build_foreign_key_map(entry)
     return tables
 
-def create_evaluator(prompt_type="enhanced", enable_debugging=False):
-    """Create an evaluator with specified prompt type"""
+def create_evaluator(prompt_type="enhanced", enable_debugging=False, use_chromadb=False, chromadb_config=None):
+    """Create an evaluator with specified prompt type and ChromaDB options"""
     if TEMPLATE_MANAGER_AVAILABLE:
         # Convert string to PromptType enum
         if isinstance(prompt_type, str):
@@ -1860,10 +920,817 @@ def create_evaluator(prompt_type="enhanced", enable_debugging=False):
             }
             prompt_type = prompt_type_map.get(prompt_type, PromptType.ENHANCED)
         
-        return EnhancedEvaluator(prompt_type=prompt_type, enable_debugging=enable_debugging)
+        # Use ChromaDBEvaluator if ChromaDB is requested and available
+        if use_chromadb and CHROMADB_AVAILABLE:
+            return ChromaDBEvaluator(
+                prompt_type=prompt_type, 
+                enable_debugging=enable_debugging,
+                use_chromadb=use_chromadb,
+                chromadb_config=chromadb_config
+            )
+        else:
+            return BaseEvaluator()
     else:
         print("⚠️  Template manager not available, falling back to basic evaluator")
         return BaseEvaluator()
+    
+def normalize_sql_for_evaluation(sql):
+        """Normalize SQL query for fair comparison."""
+        if not sql:
+            return sql
+        
+        # Remove newlines and normalize whitespace
+        normalized = ' '.join(sql.strip().split())
+        
+        # Remove trailing semicolon
+        if normalized.endswith(';'):
+            normalized = normalized[:-1]
+        
+        return normalized
+
+class BaseEvaluator:
+    """Base evaluator class with original functionality"""
+    def __init__(self):
+        self.partial_scores = None
+        self.langchain_generator = None
+        if LANGCHAIN_AVAILABLE:
+            self._setup_langchain()
+
+    def _setup_langchain(self):
+        """Setup basic LangChain for text-to-SQL generation"""
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        env_path = os.path.join(current_dir, "..", ".env")
+        load_dotenv(env_path)
+        api_key = os.getenv("GOOGLE_API_KEY")
+        
+        if not api_key or api_key == "your-api-key-here":
+            print("⚠️  Google API key not found. LangChain will use pattern matching.")
+            return
+        
+        try:
+            llm = ChatGoogleGenerativeAI(
+                model="gemini-2.5-flash",
+                temperature=0.1,
+                google_api_key=api_key,
+                convert_system_message_to_human=True
+            )
+            
+            # Basic few-shot examples
+            examples = [
+                {"question": "How many students are there?", "sql": "SELECT COUNT(*) FROM student"},
+                {"question": "List all movies", "sql": "SELECT * FROM movie"},
+                {"question": "What are the teacher names?", "sql": "SELECT name FROM teacher"},
+                {"question": "Show countries with large population", "sql": "SELECT * FROM country WHERE population > 1000000"},
+            ]
+            
+            example_prompt = ChatPromptTemplate.from_messages([
+                ("human", "Question: {question}"),
+                ("ai", "SQL: {sql}")
+            ])
+            
+            few_shot_prompt = FewShotChatMessagePromptTemplate(
+                example_prompt=example_prompt,
+                examples=examples
+            )
+            
+            system_prompt = """You are an expert SQL developer. Convert natural language to SQL.           
+Database Schema: {schema}
+
+Rules:
+- Use only tables/columns from the schema
+- Generate correct SQL syntax
+- Keep queries simple
+- Return only SQL, no explanation
+
+## CRITICAL RULES (MUST FOLLOW):
+- For single table queries: NO table aliases, NO column aliases, NO field aliases
+
+## SINGLE TABLE QUERY FORMAT:
+- Correct: SELECT column1, COUNT(*) FROM table GROUP BY column1
+"""
+
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", system_prompt),
+                few_shot_prompt,
+                ("human", "Question: {question}\nSQL:")
+            ])
+            
+            self.langchain_generator = prompt | llm | StrOutputParser()
+            print("✅ Basic LangChain SQL generator initialized")
+            
+        except Exception as e:
+            print(f"⚠️  LangChain setup failed: {e}")
+            self.langchain_generator = None
+
+    def generate_sql_from_question(self, question, db_path):
+        """Generate SQL from natural language question using LangChain or patterns"""
+        print(f"🔍 Processing question: {question}")
+        print(f"📁 Database path: {db_path}")
+        
+        if not os.path.exists(db_path):
+            print(f"❌ Database file not found: {db_path}")
+            return "SELECT 1"
+        
+        schema_info = self._get_db_schema(db_path)
+        if not schema_info:
+            print("❌ No schema information extracted")
+            return "SELECT 1"
+        
+        if self.langchain_generator:
+            try:
+                schema_text = "Available Tables and Columns:\n"
+                for table, columns in schema_info.items():
+                    schema_text += f"Table '{table}': {', '.join(columns)}\n"
+                
+                result = self.langchain_generator.invoke({
+                    "question": question,
+                    "schema": schema_text
+                })
+                
+                cleaned_result = self._clean_sql_result(result)
+                validated_result = self._validate_and_fix_sql(cleaned_result, schema_info, question)
+                
+                return validated_result
+                
+            except Exception as e:
+                print(f"❌ LangChain generation failed: {e}")
+        
+        return self._pattern_generate_sql(question, schema_info)
+
+    def _get_db_schema(self, db_path):
+        """Get database schema information"""
+        if not os.path.exists(db_path):
+            return {}
+        
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+            tables = [table[0] for table in cursor.fetchall()]
+            
+            schema_info = {}
+            for table in tables:
+                cursor.execute(f"PRAGMA table_info({table})")
+                columns = [col[1] for col in cursor.fetchall()]
+                schema_info[table] = columns
+            
+            conn.close()
+            return schema_info
+            
+        except Exception as e:
+            print(f"Error getting schema: {e}")
+            return {}
+
+    def _clean_sql_result(self, result):
+        """Clean LLM result to extract SQL and normalize formatting."""
+        sql = result.strip()
+        
+        if sql.lower().startswith("sql:"):
+            sql = sql[4:].strip()
+        
+        if "```sql" in sql.lower():
+            start = sql.lower().find("```sql") + 6
+            end = sql.find("```", start)
+            if end != -1:
+                sql = sql[start:end].strip()
+        elif "```" in sql:
+            start = sql.find("```") + 3
+            end = sql.find("```", start)
+            if end != -1:
+                sql = sql[start:end].strip()
+        
+        # CRITICAL FIX: Normalize whitespace and remove newlines
+        sql = normalize_sql_for_evaluation(sql)
+    
+        return sql
+
+    def _validate_and_fix_sql(self, sql, schema_info, question):
+        """Basic validation and fixing"""
+        sql_lower = sql.lower()
+        
+        from_match = re.search(r'from\s+(\w+)', sql_lower)
+        if from_match:
+            sql_table = from_match.group(1)
+            schema_tables_lower = [t.lower() for t in schema_info.keys()]
+            
+            if sql_table not in schema_tables_lower:
+                correct_table = self._find_best_table_match(question, schema_info)
+                sql = re.sub(r'(from\s+)\w+', f'\\1{correct_table}', sql, flags=re.IGNORECASE)
+        
+        return sql
+
+    def _find_best_table_match(self, question, schema_info):
+        """Find the best matching table for the question"""
+        question_lower = question.lower()
+        tables = list(schema_info.keys())
+        
+        for table in tables:
+            if table.lower() in question_lower:
+                return table
+        
+        return tables[0] if tables else "unknown_table"
+
+    def _pattern_generate_sql(self, question, schema_info):
+        """Generate SQL using simple patterns"""
+        question_lower = question.lower()
+        tables = list(schema_info.keys())
+        
+        if not tables:
+            return "SELECT 1"
+        
+        primary_table = self._find_best_table_match(question, schema_info)
+        
+        if re.search(r'how many|count', question_lower):
+            return f"SELECT COUNT(*) FROM {primary_table}"
+        elif re.search(r'list all|show all', question_lower):
+            return f"SELECT * FROM {primary_table}"
+        elif re.search(r'names?', question_lower):
+            columns = schema_info.get(primary_table, [])
+            name_col = next((col for col in columns if 'name' in col.lower()), columns[0] if columns else '*')
+            return f"SELECT {name_col} FROM {primary_table}"
+        else:
+            return f"SELECT * FROM {primary_table}"
+
+    # Keep all your existing evaluation methods
+    def eval_hardness(self, sql):
+        count_comp1_ = count_component1(sql)
+        count_comp2_ = count_component2(sql)
+        count_others_ = count_others(sql)
+
+        if count_comp1_ <= 1 and count_others_ == 0 and count_comp2_ == 0:
+            return "easy"
+        elif (count_others_ <= 2 and count_comp1_ <= 1 and count_comp2_ == 0) or \
+                (count_comp1_ <= 2 and count_others_ < 2 and count_comp2_ == 0):
+            return "medium"
+        elif (count_others_ > 2 and count_comp1_ <= 2 and count_comp2_ == 0) or \
+                (2 < count_comp1_ <= 3 and count_others_ <= 2 and count_comp2_ == 0) or \
+                (count_comp1_ <= 1 and count_others_ == 0 and count_comp2_ <= 1):
+            return "hard"
+        else:
+            return "extra"
+
+    def eval_exact_match(self, pred, label):
+        partial_scores = self.eval_partial_match(pred, label)
+        self.partial_scores = partial_scores
+
+        for key, score in partial_scores.items():
+            if score['f1'] != 1:
+                return 0
+
+        if len(label['from']['table_units']) > 0:
+            label_tables = sorted(label['from']['table_units'])
+            pred_tables = sorted(pred['from']['table_units'])
+            return label_tables == pred_tables
+        return 1
+
+    def eval_partial_match(self, pred, label):
+        res = {}
+
+        label_total, pred_total, cnt, cnt_wo_agg = eval_sel(pred, label)
+        acc, rec, f1 = get_scores(cnt, pred_total, label_total)
+        res['select'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
+        acc, rec, f1 = get_scores(cnt_wo_agg, pred_total, label_total)
+        res['select(no AGG)'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
+
+        label_total, pred_total, cnt, cnt_wo_agg = eval_where(pred, label)
+        acc, rec, f1 = get_scores(cnt, pred_total, label_total)
+        res['where'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
+        acc, rec, f1 = get_scores(cnt_wo_agg, pred_total, label_total)
+        res['where(no OP)'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
+
+        label_total, pred_total, cnt = eval_group(pred, label)
+        acc, rec, f1 = get_scores(cnt, pred_total, label_total)
+        res['group(no Having)'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
+
+        label_total, pred_total, cnt = eval_having(pred, label)
+        acc, rec, f1 = get_scores(cnt, pred_total, label_total)
+        res['group'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
+
+        label_total, pred_total, cnt = eval_order(pred, label)
+        acc, rec, f1 = get_scores(cnt, pred_total, label_total)
+        res['order'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
+
+        label_total, pred_total, cnt = eval_and_or(pred, label)
+        acc, rec, f1 = get_scores(cnt, pred_total, label_total)
+        res['and/or'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
+
+        label_total, pred_total, cnt = eval_IUEN(pred, label, self)
+        acc, rec, f1 = get_scores(cnt, pred_total, label_total)
+        res['IUEN'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
+
+        label_total, pred_total, cnt = eval_keywords(pred, label)
+        acc, rec, f1 = get_scores(cnt, pred_total, label_total)
+        res['keywords'] = {'acc': acc, 'rec': rec, 'f1': f1,'label_total':label_total,'pred_total':pred_total}
+
+        return res
+
+class ChromaDBEvaluator(BaseEvaluator):
+    """Enhanced evaluator with template manager integration AND ChromaDB"""
+    
+    def __init__(self, prompt_type=PromptType.ENHANCED, enable_debugging=False, 
+                 use_chromadb=True, chromadb_config=None):
+        super().__init__()
+        self.prompt_type = prompt_type
+        self.enable_debugging = enable_debugging
+        
+        # ChromaDB setup - NEW ADDITION
+        self.use_chromadb = use_chromadb and CHROMADB_AVAILABLE
+        self.chromadb_system = None
+        self.retrieval_stats = {
+            'queries_with_retrieval': 0,
+            'successful_retrievals': 0,
+            'retrieval_helped': 0,
+            'average_similarity': 0.0
+        }
+        
+        if self.use_chromadb:
+            self._setup_chromadb(chromadb_config)
+        
+        # Initialize template manager if available
+        if TEMPLATE_MANAGER_AVAILABLE:
+            self.template_manager = TemplateManager()
+            self.specialized_prompts = SpecializedPrompts()
+            print(f"Using {prompt_type.value} prompting strategy with ChromaDB")
+        else:
+            self.template_manager = None
+            self.specialized_prompts = None
+        
+        # Override LangChain setup with enhanced templates
+        if LANGCHAIN_AVAILABLE and self.template_manager:
+            self._setup_enhanced_langchain()
+        
+        # Statistics tracking
+        self.generation_stats = {
+            'total_queries': 0,
+            'successful_generations': 0,
+            'template_corrections': 0,
+            'pattern_fallbacks': 0,
+            'syntax_errors': 0,
+            'chromadb_retrievals': 0
+        }
+
+    def _setup_chromadb(self, config=None):
+        """Setup ChromaDB system for retrieval - NEW METHOD"""
+        try:
+            config = config or {}
+            data_dir = config.get('data_dir', './spider_data')
+            persist_dir = config.get('persist_dir', './chromadb')
+            
+            self.chromadb_system = InteractiveSpiderQuery(
+                data_dir=data_dir,
+                persist_dir=persist_dir
+            )
+            
+            # Check if collections are available
+            collections_ready = self.chromadb_system.load_or_create_collections()
+            if not collections_ready:
+                print("ChromaDB collections not ready. Disabling ChromaDB features.")
+                self.use_chromadb = False
+                self.chromadb_system = None
+            else:
+                print("ChromaDB system ready for retrieval-augmented generation")
+                
+        except Exception as e:
+            print(f"Failed to setup ChromaDB: {e}")
+            self.use_chromadb = False
+            self.chromadb_system = None
+
+    def retrieve_similar_examples(self, question: str, n_examples: int = 3, min_similarity: float = 0.3):
+        """Retrieve similar examples from ChromaDB for few-shot prompting - NEW METHOD"""
+        if not self.use_chromadb or not self.chromadb_system:
+            return []
+        
+        try:
+            self.generation_stats['chromadb_retrievals'] += 1
+            
+            # Get similar questions and SQL queries
+            similar_results = self.chromadb_system.query_similar_questions(
+                question, n_results=n_examples, min_similarity=min_similarity
+            )
+            
+            if "error" in similar_results:
+                return []
+            
+            # Format examples for prompting
+            examples = []
+            similarities = []
+            
+            for result in similar_results.get('results', []):
+                examples.append({
+                    'question': result['question'],
+                    'sql': result['sql_query'],
+                    'database': result['database'],
+                    'similarity': result['similarity_score']
+                })
+                similarities.append(result['similarity_score'])
+            
+            # Update stats
+            self.retrieval_stats['successful_retrievals'] += 1
+            if similarities:
+                self.retrieval_stats['average_similarity'] = sum(similarities) / len(similarities)
+            
+            return examples
+            
+        except Exception as e:
+            print(f"Error in ChromaDB retrieval: {e}")
+            return []
+
+    def retrieve_relevant_schema(self, question: str, n_schemas: int = 2):
+        """Retrieve relevant database schemas for the question - NEW METHOD"""
+        if not self.use_chromadb or not self.chromadb_system:
+            return []
+        
+        try:
+            schema_results = self.chromadb_system.find_relevant_schemas(
+                question, n_results=n_schemas
+            )
+            
+            if "error" in schema_results:
+                return []
+            
+            schemas = []
+            for schema in schema_results.get('relevant_schemas', []):
+                schemas.append({
+                    'database': schema['database'],
+                    'schema': schema['schema'],
+                    'similarity': schema['similarity_score']
+                })
+            
+            return schemas
+            
+        except Exception as e:
+            print(f"Error in schema retrieval: {e}")
+            return []
+
+    def _setup_enhanced_langchain(self):
+        """Setup enhanced LangChain with template manager AND ChromaDB examples - MODIFIED"""
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        env_path = os.path.join(current_dir, "..", ".env")
+        load_dotenv(env_path)
+        api_key = os.getenv("GOOGLE_API_KEY")
+        
+        if not api_key or api_key == "your-api-key-here":
+            print("Google API key not found. Using pattern matching fallback.")
+            return
+        
+        try:
+            llm = ChatGoogleGenerativeAI(
+                model="gemini-1.5-flash",
+                temperature=0.1,
+                google_api_key=api_key,
+                convert_system_message_to_human=True
+            )
+            
+            # Get enhanced prompt template from template manager
+            template_str = self.template_manager.get_template(self.prompt_type)
+            
+            # Modify template to include ChromaDB retrieval placeholder - NEW ENHANCEMENT
+            if self.use_chromadb:
+                chromadb_section = """
+## RETRIEVED SIMILAR EXAMPLES:
+{retrieved_examples}
+
+Use the above examples as reference for generating accurate SQL queries.
+"""
+                template_str = template_str.replace(
+                    "Database Schema:",
+                    chromadb_section + "\nDatabase Schema:"
+                )
+            
+            print(f"Using {self.prompt_type.value} template with ChromaDB enhancement")
+            
+            # Create LangChain prompt
+            prompt = ChatPromptTemplate.from_template(template_str)
+            
+            # Create chain
+            self.langchain_generator = prompt | llm | StrOutputParser()
+            print("Enhanced LangChain SQL generator with ChromaDB initialized")
+            
+        except Exception as e:
+            print(f"Enhanced LangChain setup failed: {e}")
+            self.langchain_generator = None
+
+    def generate_sql_from_question(self, question, db_path):
+        """Enhanced SQL generation with ChromaDB retrieval and template manager - ENHANCED"""
+        self.generation_stats['total_queries'] += 1
+        self.retrieval_stats['queries_with_retrieval'] += 1
+        
+        print(f"Enhanced processing with ChromaDB: {question}")
+        print(f"Database: {db_path}")
+        
+        if not os.path.exists(db_path):
+            print(f"Database file not found: {db_path}")
+            return "SELECT 1"
+        
+        schema_info = self._get_db_schema(db_path)
+        if not schema_info:
+            print("No schema information extracted")
+            return "SELECT 1"
+        
+        print(f"Found {len(schema_info)} tables: {list(schema_info.keys())}")
+        
+        # Retrieve similar examples from ChromaDB - NEW FUNCTIONALITY
+        similar_examples = []
+        relevant_schemas = []
+        
+        if self.use_chromadb:
+            similar_examples = self.retrieve_similar_examples(question, n_examples=3)
+            relevant_schemas = self.retrieve_relevant_schema(question, n_schemas=2)
+            
+            if similar_examples:
+                print(f"Retrieved {len(similar_examples)} similar examples from ChromaDB")
+            if relevant_schemas:
+                print(f"Retrieved {len(relevant_schemas)} relevant schemas from ChromaDB")
+        
+        # Format schema for prompt
+        schema_text = self._format_schema_for_prompt(schema_info, relevant_schemas)
+        
+        # Try LangChain generation with ChromaDB enhancement
+        if self.langchain_generator:
+            try:
+                print(f"Using {self.prompt_type.value} prompting with ChromaDB retrieval...")
+                
+                # Format retrieved examples for prompt - NEW FUNCTIONALITY
+                retrieved_examples_text = ""
+                if similar_examples:
+                    retrieved_examples_text = "Similar examples from database:\n"
+                    for i, example in enumerate(similar_examples, 1):
+                        retrieved_examples_text += f"Example {i} (similarity: {example['similarity']:.3f}):\n"
+                        retrieved_examples_text += f"Question: {example['question']}\n"
+                        retrieved_examples_text += f"SQL: {example['sql']}\n"
+                        retrieved_examples_text += f"Database: {example['database']}\n\n"
+                else:
+                    retrieved_examples_text = "No similar examples found in database."
+                
+                result = self.langchain_generator.invoke({
+                    "question": question,
+                    "schema": schema_text,
+                    "retrieved_examples": retrieved_examples_text
+                })
+                
+                print(f"LLM result: {result}")
+                cleaned_sql = self._clean_sql_result(result)
+                print(f"Cleaned SQL: {cleaned_sql}")
+                
+                # Enhanced validation with template manager
+                validated_sql = self._validate_and_enhance_sql(cleaned_sql, schema_info, question)
+                
+                if validated_sql != cleaned_sql:
+                    self.generation_stats['template_corrections'] += 1
+                    print(f"Template correction applied: {validated_sql}")
+                
+                # Check if retrieval helped - NEW FUNCTIONALITY
+                if similar_examples and self._sql_seems_better_with_retrieval(validated_sql, similar_examples):
+                    self.retrieval_stats['retrieval_helped'] += 1
+                
+                self.generation_stats['successful_generations'] += 1
+                return validated_sql
+                
+            except Exception as e:
+                print(f"Enhanced LangChain generation failed: {e}")
+                self.generation_stats['syntax_errors'] += 1
+                if self.enable_debugging:
+                    import traceback
+                    traceback.print_exc()
+        
+        # Fallback to enhanced pattern matching with ChromaDB
+        print("Using enhanced pattern matching with ChromaDB fallback...")
+        self.generation_stats['pattern_fallbacks'] += 1
+        return self._enhanced_pattern_generate_sql_with_chromadb(question, schema_info, similar_examples)
+
+    def _format_schema_for_prompt(self, schema_info, relevant_schemas=None):
+        """Format schema information for prompt templates with ChromaDB context"""
+        if not schema_info:
+            return "No schema available"
+        
+        schema_lines = []
+        
+        # Add main schema
+        schema_lines.append("=== Current Database Schema ===")
+        for table, columns in schema_info.items():
+            schema_lines.append(f"table: {table} [{', '.join(columns)}]")
+        
+        # Add relevant schemas as context if available
+        if relevant_schemas:
+            schema_lines.append("\n=== Similar Database Schemas for Context ===")
+            for i, rel_schema in enumerate(relevant_schemas, 1):
+                schema_lines.append(f"Example {i} (similarity: {rel_schema['similarity']:.3f}):")
+                schema_lines.append(rel_schema['schema'])
+                schema_lines.append("")
+        
+        return "\n".join(schema_lines)
+
+    def _validate_and_enhance_sql(self, sql, schema_info, question):
+        """Enhanced validation using template manager patterns"""
+        if not sql or sql == "SELECT 1":
+            return sql
+        
+        # Basic validation
+        issues = self._find_sql_issues(sql, schema_info)
+        
+        if not issues:
+            return sql
+        
+        print(f"Found {len(issues)} validation issues: {[i['type'] for i in issues]}")
+        
+        # Try to fix using specialized prompts if available
+        if self.specialized_prompts and self.langchain_generator and self.enable_debugging:
+            try:
+                debug_template = self.specialized_prompts.get_debugging_prompt()
+                
+                # Create debugging chain
+                llm = ChatGoogleGenerativeAI(
+                    model="gemini-1.5-flash",
+                    temperature=0.1,
+                    google_api_key=os.getenv("GOOGLE_API_KEY"),
+                    convert_system_message_to_human=True
+                )
+                
+                debug_prompt = ChatPromptTemplate.from_template(debug_template)
+                debug_chain = debug_prompt | llm | StrOutputParser()
+                
+                schema_text = self._format_schema_for_prompt(schema_info)
+                error_msg = "; ".join([f"{i['type']}: {i.get('message', 'Issue detected')}" for i in issues])
+                
+                corrected_result = debug_chain.invoke({
+                    "question": question,
+                    "schema": schema_text,
+                    "sql": sql,
+                    "error": error_msg
+                })
+                
+                corrected_sql = self._clean_sql_result(corrected_result)
+                print(f"Debugging prompt result: {corrected_sql}")
+                
+                return corrected_sql
+                
+            except Exception as e:
+                print(f"Debugging prompt failed: {e}")
+        
+        # Fallback to rule-based corrections
+        return self._apply_rule_based_corrections(sql, issues, schema_info, question)
+
+    def _find_sql_issues(self, sql, schema_info):
+        """Find issues in the generated SQL"""
+        issues = []
+        sql_lower = sql.lower()
+        
+        # Check table existence
+        from_match = re.search(r'from\s+(\w+)', sql_lower)
+        if from_match:
+            table_name = from_match.group(1)
+            if table_name not in [t.lower() for t in schema_info.keys()]:
+                issues.append({
+                    'type': 'table_not_found',
+                    'table': table_name,
+                    'message': f"Table '{table_name}' not found in schema"
+                })
+        
+        return issues
+
+    def _apply_rule_based_corrections(self, sql, issues, schema_info, question):
+        """Apply rule-based corrections using template manager patterns"""
+        corrected_sql = sql
+        
+        for issue in issues:
+            if issue['type'] == 'table_not_found':
+                correct_table = self._find_best_table_match(question, schema_info)
+                pattern = r'(from\s+)\w+'
+                corrected_sql = re.sub(pattern, f'\\1{correct_table}', corrected_sql, flags=re.IGNORECASE)
+                print(f"Corrected table: {issue['table']} → {correct_table}")
+        
+        return corrected_sql
+
+    def _sql_seems_better_with_retrieval(self, sql: str, similar_examples) -> bool:
+        """Check if SQL generation was improved by ChromaDB retrieval - NEW METHOD"""
+        # Simple heuristic: check if generated SQL has patterns similar to retrieved examples
+        sql_lower = sql.lower()
+        
+        for example in similar_examples:
+            example_sql = example['sql'].lower()
+            
+            # Check for similar SQL patterns
+            if any(pattern in sql_lower for pattern in ['select', 'from', 'where', 'join']):
+                if any(pattern in example_sql for pattern in ['select', 'from', 'where', 'join']):
+                    return True
+        
+        return False
+
+    def _enhanced_pattern_generate_sql_with_chromadb(self, question, schema_info, similar_examples):
+        """Enhanced pattern-based SQL generation using ChromaDB examples - NEW METHOD"""
+        question_lower = question.lower()
+        tables = list(schema_info.keys())
+        
+        if not tables:
+            return "SELECT 1"
+        
+        # First, try to learn from ChromaDB examples
+        if similar_examples:
+            for example in similar_examples:
+                example_sql = example['sql'].lower()
+                example_question = example['question'].lower()
+                
+                # Pattern matching from retrieved examples
+                if ('count' in question_lower or 'how many' in question_lower) and 'count' in example_sql:
+                    primary_table = self._find_best_table_match(question, schema_info)
+                    return f"SELECT COUNT(*) FROM {primary_table}"
+                
+                if ('list' in question_lower or 'show' in question_lower) and 'select *' in example_sql:
+                    primary_table = self._find_best_table_match(question, schema_info)
+                    return f"SELECT * FROM {primary_table}"
+                
+                if 'join' in example_sql and any(word in question_lower for word in ['with', 'and', 'together']):
+                    # Try to replicate JOIN pattern
+                    if len(tables) > 1:
+                        return f"SELECT * FROM {tables[0]} JOIN {tables[1]}"
+        
+        # Fallback to template manager patterns
+        if self.template_manager:
+            patterns = self.template_manager.common_patterns
+            
+            for pattern, sql_template in patterns.items():
+                if pattern.lower() in question_lower:
+                    print(f"Matched pattern: '{pattern}' → {sql_template}")
+                    customized_sql = self._customize_sql_template(sql_template, question, schema_info)
+                    return customized_sql
+        
+        # Final fallback to basic pattern matching
+        return super()._pattern_generate_sql(question, schema_info)
+
+    def _customize_sql_template(self, template, question, schema_info):
+        """Customize SQL template based on question and schema"""
+        primary_table = self._find_best_table_match(question, schema_info)
+        customized = template.replace('table', primary_table)
+        
+        if 'column' in customized:
+            relevant_column = self._find_relevant_column(question, primary_table, schema_info)
+            customized = customized.replace('column', relevant_column)
+        
+        return customized
+
+    def _find_relevant_column(self, question, table, schema_info):
+        """Find the most relevant column based on question context"""
+        if table not in schema_info:
+            return '*'
+        
+        question_lower = question.lower()
+        columns = schema_info[table]
+        
+        # Look for columns mentioned in question
+        for col in columns:
+            if col.lower() in question_lower:
+                return col
+        
+        # Look for name columns
+        for col in columns:
+            if 'name' in col.lower():
+                return col
+        
+        return columns[0] if columns else '*'
+
+    def get_generation_statistics(self):
+        """Get comprehensive statistics including ChromaDB performance - ENHANCED"""
+        total = self.generation_stats['total_queries']
+        if total == 0:
+            return {}
+        
+        stats = {
+            'total_queries': total,
+            'success_rate': self.generation_stats['successful_generations'] / total,
+            'correction_rate': self.generation_stats['template_corrections'] / total,
+            'fallback_rate': self.generation_stats['pattern_fallbacks'] / total,
+            'error_rate': self.generation_stats['syntax_errors'] / total,
+        }
+        
+        stats.update({
+            'chromadb_retrievals': self.generation_stats['chromadb_retrievals'],
+            'retrieval_success_rate': (
+                self.retrieval_stats['successful_retrievals'] / 
+                max(1, self.retrieval_stats['queries_with_retrieval'])
+            ),
+            'retrieval_help_rate': (
+                self.retrieval_stats['retrieval_helped'] / 
+                max(1, self.retrieval_stats['queries_with_retrieval'])
+            ),
+            'average_similarity': self.retrieval_stats['average_similarity']
+        })
+        
+        return stats
+
+    def get_retrieval_statistics(self):
+        """Get detailed ChromaDB retrieval statistics"""
+        stats = self.retrieval_stats.copy()
+        
+        if stats['queries_with_retrieval'] > 0:
+            stats['retrieval_success_rate'] = stats['successful_retrievals'] / stats['queries_with_retrieval']
+            stats['retrieval_help_rate'] = stats['retrieval_helped'] / stats['queries_with_retrieval']
+        else:
+            stats['retrieval_success_rate'] = 0.0
+            stats['retrieval_help_rate'] = 0.0
+        
+        return stats
+   
+    
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--gold', dest='gold', type=str, help="the path to the gold queries")
@@ -1890,7 +1757,41 @@ if __name__ == "__main__":
                         help='Enable debugging prompts for SQL correction')
     parser.add_argument('--use_enhanced', default=False, action='store_true',
                         help='Use enhanced evaluator with template manager')
+    
+    # ChromaDB options
+    parser.add_argument('--use_chromadb', default=False, action='store_true',
+                        help='Enable ChromaDB retrieval-augmented generation')
+    parser.add_argument('--chromadb_data_dir', dest='chromadb_data_dir', type=str, default='./spider_data',
+                        help='Path to Spider dataset directory for ChromaDB')
+    parser.add_argument('--chromadb_persist_dir', dest='chromadb_persist_dir', type=str, default='./chromadb',
+                        help='Path to ChromaDB persistence directory')
+    parser.add_argument('--chromadb_n_examples', dest='chromadb_n_examples', type=int, default=3,
+                        help='Number of similar examples to retrieve from ChromaDB')
+    parser.add_argument('--chromadb_min_similarity', dest='chromadb_min_similarity', type=float, default=0.3,
+                        help='Minimum similarity threshold for ChromaDB retrieval')
+    parser.add_argument('--chromadb_n_schemas', dest='chromadb_n_schemas', type=int, default=2,
+                        help='Number of relevant schemas to retrieve from ChromaDB')
+    
     args = parser.parse_args()
+
+    # Prepare ChromaDB configuration
+    chromadb_config = None
+    if args.use_chromadb:
+        if not CHROMADB_AVAILABLE:
+            print("❌ ChromaDB not available. Please run the setup script first:")
+            print("  python utils/spider_chromadb_integration.py")
+            print("Or disable ChromaDB with --use_chromadb=False")
+            exit(1)
+        
+        chromadb_config = {
+            'data_dir': args.chromadb_data_dir,
+            'persist_dir': args.chromadb_persist_dir,
+            'n_examples': args.chromadb_n_examples,
+            'min_similarity': args.chromadb_min_similarity,
+            'n_schemas': args.chromadb_n_schemas
+        }
+        
+        print(f"🔍 ChromaDB enabled with config: {chromadb_config}")
 
     # only evaluting exact match needs this argument
     kmaps = None
@@ -1901,7 +1802,8 @@ if __name__ == "__main__":
     results = evaluate(
         args.gold, args.pred, args.db, args.etype, kmaps, args.plug_value, 
         args.keep_distinct, args.progress_bar_for_each_datapoint, 
-        args.use_langchain, args.questions, args.prompt_type, args.enable_debugging
+        args.use_langchain, args.questions, args.prompt_type, args.enable_debugging,
+        args.use_chromadb, chromadb_config
     )
     
     print("Evaluation completed!")

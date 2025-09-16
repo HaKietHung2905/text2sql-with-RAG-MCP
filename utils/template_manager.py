@@ -61,7 +61,8 @@ class TemplateManager:
             "**NULL Handling**: Use IS NULL/IS NOT NULL for null value comparisons",
             "**Column Qualification**: Use table aliases to avoid ambiguous column references in JOINs",
             "**Function Usage**: Use database-appropriate functions (e.g., YEAR(), DATE(), etc.)",
-            "**Performance Awareness**: Prefer efficient query structures when multiple approaches are possible"
+            "**Performance Awareness**: Prefer efficient query structures when multiple approaches are possible",
+            "**If query use single table, query won't use table alias or column alias or field alias. Remove it"
         ]
 
     def get_template(self, prompt_type: PromptType) -> str:
@@ -88,11 +89,15 @@ class TemplateManager:
 Database Schema:
 {schema}
 
-Rules:
+CRITICAL RULES (MUST FOLLOW):
+- For single table queries: NO table aliases, NO column aliases, NO field aliases
 - Use only tables/columns from the schema
 - Generate correct SQL syntax
 - Keep queries simple and efficient
 - Return only SQL, no explanation
+
+SINGLE TABLE QUERY FORMAT:
+- Correct: SELECT column1, COUNT(*) FROM table GROUP BY column1
 
 Question: {question}
 
@@ -100,7 +105,7 @@ SQL Query:"""
 
     def get_few_shot_template(self) -> str:
         """Few-shot prompting template with examples"""
-        return """You are an expert SQL developer. Convert natural language questions to SQL queries based on the provided database schema.
+        return """You are an expert SQL developer. Convert natural language questions to SQL queries based on the provided database schema. If query use single table, query won't use table alias or column alias or field alias
 
 ## Examples:
 
@@ -183,7 +188,8 @@ Validation Check:
 2. Required columns: [List columns needed]  
 3. JOIN conditions: [List any JOINs needed]
 4. Filter conditions: [List WHERE conditions]
-5. Aggregation needs: [List GROUP BY/HAVING needs]
+5. If query use single table, query won't use table alias or column alias or field alias
+6. Aggregation needs: [List GROUP BY/HAVING needs]
 
 SQL Query:"""
 
@@ -204,6 +210,13 @@ You are an elite SQL developer with deep knowledge of database systems and query
 
 ## VALIDATION RULES:
 {rules_text}
+
+## CRITICAL RULES (MUST FOLLOW):
+- For single table queries: NO table aliases, NO column aliases, NO field aliases
+
+## SINGLE TABLE QUERY FORMAT:
+- Correct: SELECT column1, COUNT(*) FROM table GROUP BY column1
+
 
 ## QUESTION PATTERN RECOGNITION:
 {patterns_text}
@@ -295,6 +308,12 @@ Step-by-step reasoning:
 7. **Apply ordering/limiting**: 
 8. **Construct SQL**: 
 
+## CRITICAL RULES (MUST FOLLOW):
+- For single table queries: NO table aliases, NO column aliases, NO field aliases
+
+## SINGLE TABLE QUERY FORMAT:
+- Correct: SELECT column1, COUNT(*) FROM table GROUP BY column1
+
 Final SQL Query:"""
 
     def get_step_by_step_template(self) -> str:
@@ -341,7 +360,14 @@ Based on the analysis above, the SQL query is:
 - ✓ All columns exist in their tables
 - ✓ JOIN conditions are correct
 - ✓ Syntax is valid
-- ✓ Logic matches the question"""
+- ✓ Logic matches the question
+
+## CRITICAL RULES (MUST FOLLOW):
+- For single table queries: NO table aliases, NO column aliases, NO field aliases
+
+## SINGLE TABLE QUERY FORMAT:
+- Correct: SELECT column1, COUNT(*) FROM table GROUP BY column1
+"""
 
     def create_custom_template(self, 
                              include_examples: bool = True,
@@ -377,6 +403,12 @@ Based on the analysis above, the SQL query is:
 5. Add GROUP BY for aggregations if needed
 6. Include ORDER BY and LIMIT if specified
 7. Validate the final query against schema and rules
+
+## CRITICAL RULES (MUST FOLLOW):
+- For single table queries: NO table aliases, NO column aliases, NO field aliases
+
+## SINGLE TABLE QUERY FORMAT:
+- Correct: SELECT column1, COUNT(*) FROM table GROUP BY column1                             
 """)
         
         template_parts.extend([
