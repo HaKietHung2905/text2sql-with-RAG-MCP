@@ -8,7 +8,9 @@ spider_data/*
 !spider_data/.gitkeep
 
 # ignore all chormadb
+utils/chromadb/*
 chromadb/*
+*.sqlite3
 !chromadb/.gitkeep
 
 # C extensions
