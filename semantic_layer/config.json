@@ -1,0 +1,509 @@
+{
+  "semantic_layer_config": {
+    "version": "1.0.0",
+    "description": "Semantic layer configuration for Text-to-SQL enhancement",
+    "created_date": "2024-09-22",
+    
+    "metrics": {
+      "count_patterns": [
+        "how many", "count", "number of", "total", "amount", "quantity",
+        "total number", "total count", "how much", "sum of records"
+      ],
+      "distinct_count_patterns": [
+        "unique", "distinct", "different", "separate", "individual",
+        "how many different", "how many unique", "number of distinct"
+      ],
+      "average_patterns": [
+        "average", "mean", "avg", "typical", "normal", "standard",
+        "average value", "mean value", "on average"
+      ],
+      "sum_patterns": [
+        "total", "sum", "aggregate", "combined", "overall",
+        "total amount", "sum of", "grand total", "add up"
+      ],
+      "max_patterns": [
+        "maximum", "max", "highest", "largest", "biggest", "top",
+        "most", "greatest", "peak", "best", "upper", "ceiling"
+      ],
+      "min_patterns": [
+        "minimum", "min", "lowest", "smallest", "least", "bottom",
+        "worst", "floor", "fewest", "tiniest", "minimal"
+      ]
+    },
+    
+    "dimensions": {
+      "temporal_patterns": [
+        "by year", "by month", "by day", "by date", "over time", 
+        "yearly", "monthly", "daily", "annually", "per year",
+        "per month", "per day", "when", "time", "period",
+        "during", "between", "since", "until", "before", "after"
+      ],
+      "categorical_patterns": [
+        "by category", "by type", "by group", "by class", "by kind",
+        "by make", "by model", "by brand", "by department", "by division",
+        "by region", "by status", "by level", "by grade", "by segment",
+        "per category", "per type", "per group"
+      ],
+      "geographical_patterns": [
+        "by country", "by state", "by city", "by region", "by location",
+        "by area", "by zone", "by territory", "per country", "per state",
+        "where", "in which", "from which", "geographic", "spatial"
+      ],
+      "numerical_patterns": [
+        "by range", "by value", "by amount", "by price", "by cost",
+        "by size", "by weight", "by age", "greater than", "less than",
+        "between", "above", "below", "over", "under"
+      ]
+    },
+    
+    "entities": {
+      "car_entity": {
+        "keywords": [
+          "car", "vehicle", "automobile", "auto", "motor", "sedan",
+          "truck", "suv", "coupe", "hatchback", "wagon", "convertible"
+        ],
+        "primary_table": "cars_data",
+        "related_tables": ["car_names", "car_makers", "model_list", "countries", "continents"],
+        "common_columns": {
+          "numeric": ["year", "mpg", "horsepower", "weight", "cylinders", "acceleration", "edispl"],
+          "categorical": ["make", "model", "origin"],
+          "temporal": ["year"]
+        },
+        "relationships": [
+          {
+            "table": "car_names",
+            "join": "cars_data.id = car_names.makeid"
+          },
+          {
+            "table": "model_list", 
+            "join": "car_names.model = model_list.model"
+          },
+          {
+            "table": "car_makers",
+            "join": "model_list.maker = car_makers.id"
+          }
+        ]
+      },
+      
+      "student_entity": {
+        "keywords": [
+          "student", "pupil", "learner", "enrollee", "undergraduate",
+          "graduate", "scholar", "attendee"
+        ],
+        "primary_table": "students",
+        "related_tables": ["enrollments", "grades", "courses", "instructors", "departments"],
+        "common_columns": {
+          "numeric": ["age", "grade", "gpa", "credits", "student_id"],
+          "categorical": ["major", "status", "level", "department"],
+          "temporal": ["enrollment_date", "graduation_date"]
+        },
+        "relationships": [
+          {
+            "table": "enrollments",
+            "join": "students.student_id = enrollments.student_id"
+          },
+          {
+            "table": "courses",
+            "join": "enrollments.course_id = courses.course_id"
+          }
+        ]
+      },
+      
+      "customer_entity": {
+        "keywords": [
+          "customer", "client", "buyer", "purchaser", "consumer",
+          "patron", "shopper", "user", "member"
+        ],
+        "primary_table": "customers",
+        "related_tables": ["orders", "payments", "addresses", "products"],
+        "common_columns": {
+          "numeric": ["customer_id", "age", "income", "credit_score"],
+          "categorical": ["segment", "status", "type", "region", "gender"],
+          "temporal": ["registration_date", "last_login", "birth_date"]
+        },
+        "relationships": [
+          {
+            "table": "orders",
+            "join": "customers.customer_id = orders.customer_id"
+          },
+          {
+            "table": "payments",
+            "join": "customers.customer_id = payments.customer_id"
+          }
+        ]
+      },
+      
+      "product_entity": {
+        "keywords": [
+          "product", "item", "merchandise", "goods", "article",
+          "commodity", "inventory", "stock", "sku"
+        ],
+        "primary_table": "products",
+        "related_tables": ["order_items", "inventory", "categories", "suppliers"],
+        "common_columns": {
+          "numeric": ["price", "cost", "weight", "quantity", "product_id"],
+          "categorical": ["category", "brand", "type", "status", "supplier"],
+          "temporal": ["created_date", "updated_date", "launch_date"]
+        },
+        "relationships": [
+          {
+            "table": "order_items",
+            "join": "products.product_id = order_items.product_id"
+          },
+          {
+            "table": "categories",
+            "join": "products.category_id = categories.category_id"
+          }
+        ]
+      },
+      
+      "order_entity": {
+        "keywords": [
+          "order", "purchase", "transaction", "sale", "invoice",
+          "receipt", "payment", "checkout", "booking"
+        ],
+        "primary_table": "orders",
+        "related_tables": ["order_items", "customers", "payments", "products"],
+        "common_columns": {
+          "numeric": ["order_id", "total_amount", "quantity", "discount"],
+          "categorical": ["status", "payment_method", "shipping_method"],
+          "temporal": ["order_date", "ship_date", "delivery_date"]
+        },
+        "relationships": [
+          {
+            "table": "order_items",
+            "join": "orders.order_id = order_items.order_id"
+          },
+          {
+            "table": "customers",
+            "join": "orders.customer_id = customers.customer_id"
+          }
+        ]
+      },
+      
+      "instructor_entity": {
+        "keywords": [
+          "instructor", "teacher", "professor", "faculty", "educator",
+          "tutor", "lecturer", "staff"
+        ],
+        "primary_table": "instructors",
+        "related_tables": ["courses", "departments", "students"],
+        "common_columns": {
+          "numeric": ["instructor_id", "salary", "years_experience"],
+          "categorical": ["department", "rank", "status", "title"],
+          "temporal": ["hire_date", "tenure_date"]
+        },
+        "relationships": [
+          {
+            "table": "courses",
+            "join": "instructors.instructor_id = courses.instructor_id"
+          },
+          {
+            "table": "departments",
+            "join": "instructors.department_id = departments.department_id"
+          }
+        ]
+      }
+    },
+    
+    "sql_enhancement_rules": {
+      "count_queries": {
+        "trigger_patterns": ["how many", "count", "number of", "total"],
+        "sql_templates": [
+          "SELECT COUNT(*) FROM {table}",
+          "SELECT COUNT(DISTINCT {column}) FROM {table}",
+          "SELECT {group_column}, COUNT(*) FROM {table} GROUP BY {group_column}"
+        ],
+        "conditions": ["WHERE clause for filtering", "GROUP BY for categorization"]
+      },
+      
+      "aggregation_queries": {
+        "average": {
+          "trigger_patterns": ["average", "mean", "avg"],
+          "sql_templates": [
+            "SELECT AVG({column}) FROM {table}",
+            "SELECT {group_column}, AVG({column}) FROM {table} GROUP BY {group_column}"
+          ],
+          "requires_numeric_column": true
+        },
+        "sum": {
+          "trigger_patterns": ["total", "sum", "aggregate"],
+          "sql_templates": [
+            "SELECT SUM({column}) FROM {table}",
+            "SELECT {group_column}, SUM({column}) FROM {table} GROUP BY {group_column}"
+          ],
+          "requires_numeric_column": true
+        },
+        "max": {
+          "trigger_patterns": ["highest", "maximum", "top", "best"],
+          "sql_templates": [
+            "SELECT MAX({column}) FROM {table}",
+            "SELECT * FROM {table} WHERE {column} = (SELECT MAX({column}) FROM {table})",
+            "SELECT * FROM {table} ORDER BY {column} DESC LIMIT {n}"
+          ],
+          "requires_numeric_column": true
+        },
+        "min": {
+          "trigger_patterns": ["lowest", "minimum", "bottom", "worst"],
+          "sql_templates": [
+            "SELECT MIN({column}) FROM {table}",
+            "SELECT * FROM {table} WHERE {column} = (SELECT MIN({column}) FROM {table})",
+            "SELECT * FROM {table} ORDER BY {column} ASC LIMIT {n}"
+          ],
+          "requires_numeric_column": true
+        }
+      },
+      
+      "grouping_queries": {
+        "trigger_patterns": ["by", "per", "group", "breakdown", "each", "every"],
+        "sql_addition": "GROUP BY {dimension_column}",
+        "requires_dimension": true,
+        "common_groupings": [
+          "GROUP BY year",
+          "GROUP BY category", 
+          "GROUP BY type",
+          "GROUP BY region",
+          "GROUP BY department"
+        ]
+      },
+      
+      "ordering_queries": {
+        "ascending": {
+          "trigger_patterns": ["ascending", "lowest first", "smallest first", "asc"],
+          "sql_addition": "ORDER BY {column} ASC"
+        },
+        "descending": {
+          "trigger_patterns": ["descending", "highest first", "largest first", "desc", "top"],
+          "sql_addition": "ORDER BY {column} DESC"
+        }
+      },
+      
+      "filtering_queries": {
+        "comparison": {
+          "greater_than": ["greater than", "more than", "above", "over", "exceeds"],
+          "less_than": ["less than", "under", "below", "fewer than"],
+          "equal_to": ["equal to", "equals", "is", "exactly"],
+          "not_equal": ["not equal", "different from", "not"],
+          "between": ["between", "from", "to", "range"]
+        },
+        "text_matching": {
+          "contains": ["contains", "includes", "has", "with"],
+          "starts_with": ["starts with", "begins with"],
+          "ends_with": ["ends with", "concludes with"]
+        }
+      },
+      
+      "limit_queries": {
+        "trigger_patterns": ["top", "first", "limit", "only", "just"],
+        "sql_addition": "LIMIT {n}",
+        "common_limits": [5, 10, 20, 50, 100]
+      }
+    },
+    
+    "column_type_hints": {
+      "numeric_indicators": [
+        "price", "cost", "amount", "value", "count", "number", "age", "year",
+        "horsepower", "mpg", "weight", "cylinders", "grade", "score", "rating",
+        "revenue", "salary", "income", "quantity", "size", "length", "width",
+        "height", "distance", "duration", "speed", "acceleration", "id",
+        "total", "sum", "avg", "max", "min", "gpa", "credits"
+      ],
+      "categorical_indicators": [
+        "type", "category", "class", "status", "region", "country", "state",
+        "department", "make", "model", "brand", "name", "title", "level",
+        "gender", "color", "material", "style", "format", "segment",
+        "rank", "grade_level", "major", "method", "origin"
+      ],
+      "temporal_indicators": [
+        "date", "time", "timestamp", "created", "updated", "modified",
+        "birth", "registration", "order_date", "purchase_date", "year",
+        "month", "day", "hour", "minute", "enrollment_date", "hire_date",
+        "graduation_date", "ship_date", "delivery_date"
+      ],
+      "textual_indicators": [
+        "name", "description", "comment", "note", "text", "message",
+        "address", "email", "phone", "url", "title", "summary",
+        "bio", "notes", "remarks", "details"
+      ]
+    },
+    
+    "common_joins": {
+      "car_domain": [
+        {
+          "description": "Cars to Car Names",
+          "from": "cars_data",
+          "to": "car_names",
+          "condition": "cars_data.id = car_names.makeid",
+          "type": "INNER JOIN"
+        },
+        {
+          "description": "Car Names to Model List",
+          "from": "car_names",
+          "to": "model_list",
+          "condition": "car_names.model = model_list.model",
+          "type": "LEFT JOIN"
+        },
+        {
+          "description": "Model List to Car Makers",
+          "from": "model_list", 
+          "to": "car_makers",
+          "condition": "model_list.maker = car_makers.id",
+          "type": "LEFT JOIN"
+        },
+        {
+          "description": "Car Makers to Countries",
+          "from": "car_makers",
+          "to": "countries",
+          "condition": "car_makers.country = countries.countryid",
+          "type": "LEFT JOIN"
+        },
+        {
+          "description": "Countries to Continents",
+          "from": "countries",
+          "to": "continents",
+          "condition": "countries.continent = continents.contid",
+          "type": "LEFT JOIN"
+        }
+      ],
+      
+      "academic_domain": [
+        {
+          "description": "Students to Enrollments",
+          "from": "students",
+          "to": "enrollments",
+          "condition": "students.student_id = enrollments.student_id",
+          "type": "LEFT JOIN"
+        },
+        {
+          "description": "Enrollments to Courses",
+          "from": "enrollments",
+          "to": "courses", 
+          "condition": "enrollments.course_id = courses.course_id",
+          "type": "INNER JOIN"
+        },
+        {
+          "description": "Courses to Instructors",
+          "from": "courses",
+          "to": "instructors",
+          "condition": "courses.instructor_id = instructors.instructor_id",
+          "type": "LEFT JOIN"
+        },
+        {
+          "description": "Instructors to Departments",
+          "from": "instructors",
+          "to": "departments",
+          "condition": "instructors.department_id = departments.department_id",
+          "type": "LEFT JOIN"
+        }
+      ],
+      
+      "business_domain": [
+        {
+          "description": "Customers to Orders",
+          "from": "customers",
+          "to": "orders",
+          "condition": "customers.customer_id = orders.customer_id",
+          "type": "LEFT JOIN"
+        },
+        {
+          "description": "Orders to Order Items",
+          "from": "orders",
+          "to": "order_items",
+          "condition": "orders.order_id = order_items.order_id",
+          "type": "LEFT JOIN"
+        },
+        {
+          "description": "Order Items to Products",
+          "from": "order_items",
+          "to": "products",
+          "condition": "order_items.product_id = products.product_id",
+          "type": "INNER JOIN"
+        },
+        {
+          "description": "Products to Categories",
+          "from": "products",
+          "to": "categories",
+          "condition": "products.category_id = categories.category_id",
+          "type": "LEFT JOIN"
+        }
+      ]
+    },
+    
+    "query_complexity_indicators": {
+      "simple": {
+        "description": "Basic single table queries",
+        "max_tables": 1,
+        "max_conditions": 2,
+        "features": ["basic_select", "simple_where", "simple_order"],
+        "no_aggregation": true,
+        "no_grouping": true,
+        "no_subqueries": true
+      },
+      "medium": {
+        "description": "Queries with aggregation or simple joins",
+        "max_tables": 2,
+        "max_conditions": 5,
+        "features": ["aggregation", "grouping", "simple_joins", "having"],
+        "simple_aggregation": true,
+        "basic_grouping": true,
+        "simple_joins": true
+      },
+      "complex": {
+        "description": "Advanced queries with multiple operations",
+        "features": ["multiple_joins", "subqueries", "window_functions", "complex_conditions"],
+        "multiple_tables": true,
+        "multiple_joins": true,
+        "complex_aggregation": true,
+        "subqueries": true,
+        "window_functions": true,
+        "nested_queries": true
+      }
+    },
+    
+    "enhancement_priorities": {
+      "high_priority": [
+        "count_detection",
+        "aggregation_detection", 
+        "grouping_detection",
+        "ordering_detection"
+      ],
+      "medium_priority": [
+        "join_suggestions",
+        "filtering_enhancement",
+        "limit_detection"
+      ],
+      "low_priority": [
+        "column_aliasing",
+        "formatting_improvements",
+        "optimization_hints"
+      ]
+    },
+    
+    "spider_specific": {
+      "common_databases": [
+        "car_1", "academic", "business", "flight_2", "pets_1",
+        "world_1", "student_transcripts_tracking", "concert_singer"
+      ],
+      "frequent_patterns": {
+        "car_queries": [
+          "cars with highest/lowest mpg",
+          "cars by manufacturer/year",
+          "average horsepower by make",
+          "cars from specific countries"
+        ],
+        "academic_queries": [
+          "students by major/department",
+          "courses with most enrollments", 
+          "average grades by course",
+          "instructors teaching most courses"
+        ],
+        "business_queries": [
+          "customers with most orders",
+          "products by category/price",
+          "total revenue by region/time",
+          "top selling products"
+        ]
+      }
+    }
+  }
+}
