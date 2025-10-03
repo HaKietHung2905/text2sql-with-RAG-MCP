@@ -61,6 +61,14 @@ except ImportError:
     LANGCHAIN_AVAILABLE = False
     print("⚠️  LangChain not available. Install with: pip install langchain langchain-openai")
 
+try:
+    from semantic_layer import SemanticEvaluator
+    SEMANTIC_AVAILABLE = True
+    print("✅ Semantic layer available")
+except ImportError:
+    SEMANTIC_AVAILABLE = False
+    print("⚠️  Semantic layer not available")
+
 # Flag to disable value evaluation
 DISABLE_VALUE = True
 # Flag to disable distinct in select evaluation
@@ -528,11 +536,28 @@ def count_others(sql):
         count += 1
 
     return count
+
+def clean_querry(sql_dict):
+    """
+    Recursively clean backticks from SQL query dictionary
+    """
+    if isinstance(sql_dict, dict):
+        cleaned = {}
+        for key, value in sql_dict.items():
+            cleaned[key] = clean_querry(value)
+        return cleaned
+    elif isinstance(sql_dict, list):
+        return [clean_querry(item) for item in sql_dict]
+    elif isinstance(sql_dict, str):
+        # Remove backticks from string values
+        return sql_dict.strip('`').replace('`', '')
+    else:
+        return sql_dict
     
 def evaluate(gold, predict, db_dir, etype, kmaps, plug_value, keep_distinct, progress_bar_for_each_datapoint, 
              use_langchain=False, questions_file=None, prompt_type="enhanced", enable_debugging=False,
-             use_chromadb=False, chromadb_config=None):
-    # LangChain mode: generate predictions from questions
+             use_chromadb=False, chromadb_config=None, use_semantic = False):
+    # LangChain mode: generate predictions from questionsFaFa
     if use_langchain and questions_file:
         print("🤖 LangChain Mode: Generating SQL from natural language questions")
         
@@ -545,7 +570,8 @@ def evaluate(gold, predict, db_dir, etype, kmaps, plug_value, keep_distinct, pro
             prompt_type=prompt_type, 
             enable_debugging=enable_debugging,
             use_chromadb=use_chromadb,
-            chromadb_config=chromadb_config
+            chromadb_config=chromadb_config, 
+            use_semantic=use_semantic
         )
         
         with open(questions_file, 'r') as f:
@@ -591,7 +617,45 @@ def evaluate(gold, predict, db_dir, etype, kmaps, plug_value, keep_distinct, pro
         plist = [generated_predictions]
         
         print(f"✅ Generated {len(generated_predictions)} SQL predictions using LangChain")
-        
+
+        if use_semantic and SEMANTIC_AVAILABLE and hasattr(evaluator, 'get_semantic_statistics'):
+            try:
+                print("\n" + "=" * 60)
+                print("📊 SEMANTIC LAYER ANALYSIS SUMMARY")
+                print("=" * 60)
+                
+                stats = evaluator.get_semantic_statistics()
+                
+                print(f"\n📈 Query Analysis:")
+                print(f"   Queries Analyzed: {stats.get('queries_analyzed', 0)}")
+                print(f"   Queries Enhanced: {stats.get('queries_enhanced', 0)}")
+                print(f"   Suggestions Made: {stats.get('suggestions_made', 0)}")
+                
+                if stats.get('complexity_scores'):
+                    avg_complexity = sum(stats['complexity_scores']) / len(stats['complexity_scores'])
+                    print(f"   Average Complexity: {avg_complexity:.2f}")
+                
+                print(f"\n🔧 Enhancements Applied:")
+                enhancement_types = stats.get('enhancement_types', {})
+                for enhancement, count in sorted(enhancement_types.items()):
+                    if count > 0:
+                        name = enhancement.replace('_', ' ').title()
+                        print(f"   {name}: {count}")
+                
+                print(f"\n🎯 Entity Recognition:")
+                entity_detections = stats.get('entity_detections', {})
+                total_entities = sum(entity_detections.values())
+                if total_entities > 0:
+                    for entity, count in sorted(entity_detections.items()):
+                        if count > 0:
+                            pct = (count / total_entities) * 100
+                            name = entity.replace('_', ' ').title()
+                            print(f"   {name}: {count} ({pct:.1f}%)")
+                
+                print("=" * 60 + "\n")
+            except Exception as e:
+                print(f"Warning: Could not retrieve semantic statistics: {e}")
+
         # Print ChromaDB statistics if available
         if use_chromadb and hasattr(evaluator, 'get_retrieval_statistics'):
             retrieval_stats = evaluator.get_retrieval_statistics()
@@ -694,6 +758,8 @@ def evaluate(gold, predict, db_dir, etype, kmaps, plug_value, keep_distinct, pro
             scores[hardness]['count'] += 1
             scores['all']['count'] += 1
 
+            if isinstance(p_str, str):
+                p_str = p_str.strip('`').replace('`', '')
             try:
                 p_sql = get_sql(schema, p_str)
                 if use_langchain:
@@ -743,7 +809,12 @@ def evaluate(gold, predict, db_dir, etype, kmaps, plug_value, keep_distinct, pro
                 p_valid_col_units = build_valid_col_units(p_sql['from']['table_units'], schema)
                 p_sql = rebuild_sql_val(p_sql)
                 p_sql = rebuild_sql_col(p_valid_col_units, p_sql, kmap)
+                p_sql = clean_querry(p_sql) 
                 exact_score = evaluator.eval_exact_match(p_sql, g_sql)
+
+                # Save p_str to a text file
+                with open("../questions/pred_queries.txt", "a", encoding="utf-8") as f:
+                    f.write(p_str + "\n")
                 partial_scores = evaluator.partial_scores
                 if exact_score == 0:
                     turn_scores['exact'].append(0)
@@ -752,6 +823,7 @@ def evaluate(gold, predict, db_dir, etype, kmaps, plug_value, keep_distinct, pro
                         print(f"   Pred: {p_str}")
                         print(f"   Gold: {g_str}")
                         print()
+                      
                 else:
                     turn_scores['exact'].append(1)
                     if use_langchain:
@@ -905,7 +977,7 @@ def build_foreign_key_map_from_json(table):
         tables[entry['db_id']] = build_foreign_key_map(entry)
     return tables
 
-def create_evaluator(prompt_type="enhanced", enable_debugging=False, use_chromadb=False, chromadb_config=None):
+def create_evaluator(prompt_type="enhanced", enable_debugging=False, use_chromadb=False, chromadb_config=None, use_semantic = False):
     """Create an evaluator with specified prompt type and ChromaDB options"""
     if TEMPLATE_MANAGER_AVAILABLE:
         # Convert string to PromptType enum
@@ -920,8 +992,16 @@ def create_evaluator(prompt_type="enhanced", enable_debugging=False, use_chromad
             }
             prompt_type = prompt_type_map.get(prompt_type, PromptType.ENHANCED)
         
-        # Use ChromaDBEvaluator if ChromaDB is requested and available
-        if use_chromadb and CHROMADB_AVAILABLE:
+        if use_semantic and SEMANTIC_AVAILABLE:
+            print("🎯 Using Semantic Enhanced Evaluator")
+            return SemanticEvaluator(
+                prompt_type=prompt_type,
+                enable_debugging=enable_debugging,
+                use_chromadb=use_chromadb,
+                chromadb_config=chromadb_config
+            )
+        # Use ChromaDBEvaluator if ChromaDB is requested
+        elif use_chromadb and CHROMADB_AVAILABLE:
             return ChromaDBEvaluator(
                 prompt_type=prompt_type, 
                 enable_debugging=enable_debugging,
@@ -956,6 +1036,18 @@ class BaseEvaluator:
         if LANGCHAIN_AVAILABLE:
             self._setup_langchain()
 
+    def normalize_sql_structure(self, sql_dict):
+        """
+        Normalize SQL structure dictionary for comparison.
+        This handles alias normalization and structural standardization.
+        """
+        if not sql_dict:
+            return sql_dict
+        
+        # For now, return as-is since the parsing already handles most normalization
+        # You can add more sophisticated normalization here if needed
+        return sql_dict
+    
     def _setup_langchain(self):
         """Setup basic LangChain for text-to-SQL generation"""
         current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1099,7 +1191,6 @@ Rules:
             if end != -1:
                 sql = sql[start:end].strip()
         
-        # CRITICAL FIX: Normalize whitespace and remove newlines
         sql = normalize_sql_for_evaluation(sql)
     
         return sql
@@ -1169,8 +1260,26 @@ Rules:
         else:
             return "extra"
 
+    def normalize_aliases(sql: str) -> str:
+        """Normalize table aliases to T1, T2, T3 format"""
+        # Parse SQL and replace aliases with standard format
+        # This is a simplified example - you'd need more robust parsing
+        
+        # Remove alias variations and standardize
+        sql = re.sub(r'\bAS\s+', '', sql, flags=re.IGNORECASE)
+        
+        # Map actual aliases to standard ones
+        # You'll need to track which tables get which aliases
+        
+        return sql
+
     def eval_exact_match(self, pred, label):
-        partial_scores = self.eval_partial_match(pred, label)
+        # Normalize both queries before comparison (if needed)
+        # Note: The rebuild functions already do most of the normalization
+        pred_normalized = pred  # or self.normalize_sql_structure(pred) if you implement it
+        label_normalized = label  # or self.normalize_sql_structure(label) if you implement it
+
+        partial_scores = self.eval_partial_match(pred_normalized, label_normalized)
         self.partial_scores = partial_scores
 
         for key, score in partial_scores.items():
@@ -1375,7 +1484,7 @@ class ChromaDBEvaluator(BaseEvaluator):
         
         try:
             llm = ChatGoogleGenerativeAI(
-                model="gemini-1.5-flash",
+                model="gemini-2.5-flash",
                 temperature=0.1,
                 google_api_key=api_key,
                 convert_system_message_to_human=True
@@ -1540,7 +1649,7 @@ Use the above examples as reference for generating accurate SQL queries.
                 
                 # Create debugging chain
                 llm = ChatGoogleGenerativeAI(
-                    model="gemini-1.5-flash",
+                    model="gemini-2.5-flash",
                     temperature=0.1,
                     google_api_key=os.getenv("GOOGLE_API_KEY"),
                     convert_system_message_to_human=True
@@ -1771,6 +1880,8 @@ if __name__ == "__main__":
                         help='Minimum similarity threshold for ChromaDB retrieval')
     parser.add_argument('--chromadb_n_schemas', dest='chromadb_n_schemas', type=int, default=2,
                         help='Number of relevant schemas to retrieve from ChromaDB')
+    parser.add_argument('--use_semantic', default=False, action='store_true',
+                       help='Use semantic layer for enhanced SQL generation')
     
     args = parser.parse_args()
 
@@ -1803,7 +1914,7 @@ if __name__ == "__main__":
         args.gold, args.pred, args.db, args.etype, kmaps, args.plug_value, 
         args.keep_distinct, args.progress_bar_for_each_datapoint, 
         args.use_langchain, args.questions, args.prompt_type, args.enable_debugging,
-        args.use_chromadb, chromadb_config
+        args.use_chromadb, chromadb_config, args.use_semantic
     )
     
     print("Evaluation completed!")
