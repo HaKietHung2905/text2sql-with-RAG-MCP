@@ -768,6 +768,15 @@ def evaluate(gold, predict, db_dir, etype, kmaps, plug_value, keep_distinct, pro
                 if use_langchain:
                     print(f"⚠️  Parse failed: {e}")
                 # If p_sql is not valid, use an empty sql structure
+
+                 # SAVE FAILED QUERY TO FILE
+                with open("../questions/pred_queries_comprehensive_failed.txt", "a", encoding="utf-8") as f:
+                    f.write(f"PARSE FAILED: {e}\n")
+                    f.write(f"Predicted: {p_str}\n")
+                    f.write(f"Gold: {g_str}\n")
+                    f.write(f"Database: {db_name}\n")
+                    f.write("-" * 80 + "\n")
+
                 p_sql = {
                     "except": None,
                     "from": {"conds": [], "table_units": []},
@@ -1067,12 +1076,13 @@ class BaseEvaluator:
                 convert_system_message_to_human=True
             )
             
-            # Basic few-shot examples
+            # Spider-compatible examples - NO ALIASES
             examples = [
                 {"question": "How many students are there?", "sql": "SELECT COUNT(*) FROM student"},
                 {"question": "List all movies", "sql": "SELECT * FROM movie"},
                 {"question": "What are the teacher names?", "sql": "SELECT name FROM teacher"},
-                {"question": "Show countries with large population", "sql": "SELECT * FROM country WHERE population > 1000000"},
+                {"question": "Show breed and size codes from dogs", "sql": "SELECT DISTINCT breed_code, size_code FROM dogs"},
+                {"question": "Show singers born in 1948 or 1949", "sql": "SELECT name FROM singer WHERE birth_year = 1948 OR birth_year = 1949"},
             ]
             
             example_prompt = ChatPromptTemplate.from_messages([
@@ -1085,21 +1095,37 @@ class BaseEvaluator:
                 examples=examples
             )
             
-            system_prompt = """You are an expert SQL developer. Convert natural language to SQL.           
-Database Schema: {schema}
+            system_prompt = """You are a SQL expert for the Spider benchmark. Generate the SIMPLEST possible query.
 
-Rules:
-- Use only tables/columns from the schema
-- Generate correct SQL syntax
-- Keep queries simple
-- Return only SQL, no explanation
+    Database Schema: {schema}
 
-## CRITICAL RULES (MUST FOLLOW):
-- For single table queries: NO table aliases, NO column aliases, NO field aliases
+    CRITICAL RULES:
+    1. NEVER use table aliases of ANY kind (no AS T1, no single letters like 'b' or 's', NOTHING)
+    2. Start with the SIMPLEST solution - always prefer single-table queries
+    3. Only use JOINs if absolutely necessary to get the requested data
+    4. Check if ONE table already contains all needed columns before joining
+    5. Column references in single-table queries: use column_name only
+    6. Column references in multi-table queries: use Table.column_name format
+    7. For codes/IDs: Select the code column, not the description column
+    8. For OR conditions: Use "col = val1 OR col = val2", NOT "IN (val1, val2)"
+    9. NEVER use LEFT JOIN, RIGHT JOIN, or OUTER JOIN
 
-## SINGLE TABLE QUERY FORMAT:
-- Correct: SELECT column1, COUNT(*) FROM table GROUP BY column1
-"""
+    DECISION TREE:
+    Step 1: Does ONE table have all the columns needed? → Use that table alone, no JOINs
+    Step 2: Need data from multiple tables? → Use JOIN with Table.column format (NO aliases)
+
+    CORRECT EXAMPLES:
+    ✓ SELECT DISTINCT breed_code, size_code FROM dogs
+    ✓ SELECT name FROM singer WHERE birth_year = 1948 OR birth_year = 1949
+    ✓ SELECT Breeds.breed_name, Sizes.size_description FROM Dogs JOIN Breeds ON Dogs.breed_code = Breeds.breed_code JOIN Sizes ON Dogs.size_code = Sizes.size_code
+
+    WRONG EXAMPLES (DO NOT DO THIS):
+    ✗ SELECT b.breed_name FROM breeds b
+    ✗ SELECT DISTINCT B.breed_name, S.size_description FROM Dogs D JOIN Breeds B ON D.breed_code = B.breed_code
+    ✗ SELECT name FROM singer WHERE birth_year IN (1948, 1949)
+    ✗ SELECT T1.name FROM singer AS T1
+
+    Return ONLY the SQL query, no explanations."""
 
             prompt = ChatPromptTemplate.from_messages([
                 ("system", system_prompt),
@@ -1113,6 +1139,82 @@ Rules:
         except Exception as e:
             print(f"⚠️  LangChain setup failed: {e}")
             self.langchain_generator = None
+
+    def _fix_spider_compatibility(self, sql, schema_info):
+        """Fix common SQL syntax issues for Spider parser compatibility"""
+        if not sql:
+            return None
+        
+        original_sql = sql
+        
+        # Check for LEFT/RIGHT/OUTER JOIN - Spider doesn't support these well
+        if re.search(r'\b(LEFT|RIGHT|OUTER)\s+JOIN\b', sql, re.IGNORECASE):
+            print("⚠️ Unsupported JOIN type detected - needs regeneration")
+            return None
+        
+        # Fix: Remove single-letter aliases without AS keyword
+        # Pattern: FROM table x or JOIN table x where x is single letter
+        sql = re.sub(
+            r'\b(FROM|JOIN)\s+(\w+)\s+([a-z])\b',
+            r'\1 \2',
+            sql,
+            flags=re.IGNORECASE
+        )
+        
+        # Fix: Convert IN (val1, val2) to OR conditions for WHERE clauses
+        # Only for simple value lists, not subqueries
+        in_pattern = r'WHERE\s+(\w+\.?\w*)\s+IN\s+\(([^SELECT][^)]+)\)'
+        match = re.search(in_pattern, sql, re.IGNORECASE)
+        if match:
+            col = match.group(1)
+            values = [v.strip() for v in match.group(2).split(',')]
+            or_conditions = ' OR '.join([f"{col} = {v}" for v in values])
+            sql = re.sub(in_pattern, f'WHERE {or_conditions}', sql, flags=re.IGNORECASE)
+            print(f"Fixed IN clause to OR conditions")
+        
+        # Fix: Standardize aliases to T1, T2, T3 format
+        # Find all table aliases
+        alias_matches = list(re.finditer(
+            r'(?:FROM|JOIN)\s+(\w+)\s+(?:AS\s+)?([A-Z])\b',
+            sql,
+            re.IGNORECASE
+        ))
+        
+        if alias_matches:
+            alias_map = {}
+            for i, match in enumerate(alias_matches, 1):
+                table_name = match.group(1)
+                current_alias = match.group(2)
+                
+                # Only remap if not already T1, T2, T3, etc.
+                if not re.match(r'^T\d+$', current_alias, re.IGNORECASE):
+                    new_alias = f'T{i}'
+                    alias_map[current_alias] = new_alias
+                    print(f"Remapping alias {current_alias} -> {new_alias}")
+            
+            # Apply alias replacements
+            for old_alias, new_alias in alias_map.items():
+                # Replace in table declarations
+                sql = re.sub(
+                    rf'\b{old_alias}\b(?=\s|$|,|\))',
+                    new_alias,
+                    sql,
+                    flags=re.IGNORECASE
+                )
+            
+            # Ensure AS keyword is present
+            sql = re.sub(
+                r'(FROM|JOIN)\s+(\w+)\s+(T\d+)\b',
+                r'\1 \2 AS \3',
+                sql,
+                flags=re.IGNORECASE
+            )
+        
+        if sql != original_sql:
+            print(f"Spider compatibility fixes applied")
+            print(f"Fixed SQL: {sql}")
+        
+        return sql
 
     def generate_sql_from_question(self, question, db_path):
         """Generate SQL from natural language question using LangChain or patterns"""
@@ -1128,26 +1230,119 @@ Rules:
             print("❌ No schema information extracted")
             return "SELECT 1"
         
+        # Format schema for prompt
+        schema_text = "Available Tables and Columns:\n"
+        for table, columns in schema_info.items():
+            schema_text += f"Table '{table}': {', '.join(columns)}\n"
+        
         if self.langchain_generator:
             try:
-                schema_text = "Available Tables and Columns:\n"
-                for table, columns in schema_info.items():
-                    schema_text += f"Table '{table}': {', '.join(columns)}\n"
-                
                 result = self.langchain_generator.invoke({
                     "question": question,
                     "schema": schema_text
                 })
                 
                 cleaned_result = self._clean_sql_result(result)
+               
                 validated_result = self._validate_and_fix_sql(cleaned_result, schema_info, question)
                 
                 return validated_result
+                #cleaned_sql = self._clean_sql_result(result)
+                #print(f"Cleaned SQL: {cleaned_sql}")
+
+                #fixed_sql = self._remove_all_aliases(cleaned_sql, schema_info)
+                
+                #if fixed_sql is None:
+                    #print("🔄 Failed to fix aliases, using fallback...")
+                    #return self._pattern_generate_sql(question, schema_info)
+                
+                #print(f"Final SQL (no aliases): {fixed_sql}")
+                #return fixed_sql
                 
             except Exception as e:
                 print(f"❌ LangChain generation failed: {e}")
         
         return self._pattern_generate_sql(question, schema_info)
+
+    def _remove_all_aliases(self, sql, schema_info):
+        """Aggressively remove ALL table aliases"""
+        if not sql:
+            return None
+        
+        print(f"🔧 Removing aliases from: {sql}")
+        
+        # IMPROVED: Match aliases with or without AS, including uppercase like T1, T2
+        alias_pattern = r'(?P<keyword>FROM|JOIN)\s+(?P<table>\w+)\s+(?:AS\s+)?(?P<alias>[a-zA-Z]\w*)(?=\s|$|JOIN|WHERE|ON|,)'
+        
+        matches = list(re.finditer(alias_pattern, sql, re.IGNORECASE))
+        
+        if not matches:
+            print("   No aliases detected")
+            return self._normalize_table_case(sql, schema_info)
+        
+        # Build alias mapping
+        alias_to_table = {}
+        for match in matches:
+            table = match.group('table')
+            alias = match.group('alias')
+            
+            # Map if alias is different from table name
+            if alias.lower() != table.lower():
+                alias_to_table[alias] = table
+                print(f"   Found: {alias} → {table}")
+        
+        if not alias_to_table:
+            return self._normalize_table_case(sql, schema_info)
+        
+        # Replace alias.column with table.column
+        result = sql
+        for alias, table in alias_to_table.items():
+            result = re.sub(
+                rf'\b{re.escape(alias)}\.(\w+)',
+                rf'{table}.\1',
+                result,
+                flags=re.IGNORECASE
+            )
+        
+        # Remove alias declarations - IMPROVED to catch T1, T2, etc
+        result = re.sub(
+            r'(FROM|JOIN)\s+(\w+)\s+(?:AS\s+)?[a-zA-Z]\w*(?=\s|$|JOIN|WHERE|ON|,)',
+            r'\1 \2',
+            result,
+            flags=re.IGNORECASE
+        )
+        
+        # Normalize table case
+        result = self._normalize_table_case(result, schema_info)
+        
+        print(f"   Result: {result}")
+        return result
+
+    def _normalize_table_case(self, sql, schema_info):
+        """Normalize table names to match exact case in schema"""
+        if not schema_info:
+            return sql
+        
+        result = sql
+        table_case_map = {table.lower(): table for table in schema_info.keys()}
+        
+        for table_lower, table_correct in table_case_map.items():
+            # Replace in FROM/JOIN
+            result = re.sub(
+                rf'\b(FROM|JOIN)\s+{re.escape(table_lower)}\b',
+                rf'\1 {table_correct}',
+                result,
+                flags=re.IGNORECASE
+            )
+            # Replace in table.column
+            result = re.sub(
+                rf'\b{re.escape(table_lower)}\.(\w+)',
+                rf'{table_correct}.\1',
+                result,
+                flags=re.IGNORECASE
+            )
+        
+        return result
 
     def _get_db_schema(self, db_path):
         """Get database schema information"""
@@ -1519,6 +1714,57 @@ Use the above examples as reference for generating accurate SQL queries.
             print(f"Enhanced LangChain setup failed: {e}")
             self.langchain_generator = None
 
+    def _remove_all_aliases(self, sql, schema_info):
+        """Aggressively remove ALL table aliases"""
+        if not sql:
+            return None
+        
+        print(f"🔧 Removing aliases from: {sql}")
+        
+        # Pattern: FROM/JOIN Table alias (where alias is 1-3 chars or different from table)
+        alias_pattern = r'(?P<keyword>FROM|JOIN)\s+(?P<table>\w+)\s+(?:AS\s+)?(?P<alias>[a-zA-Z]+)(?=\s|$|JOIN|WHERE|ON)'
+        
+        matches = list(re.finditer(alias_pattern, sql, re.IGNORECASE))
+        
+        if not matches:
+            print("   No aliases detected")
+            return sql
+        
+        # Build alias mapping
+        alias_to_table = {}
+        for match in matches:
+            table = match.group('table')
+            alias = match.group('alias')
+            
+            # Map if alias is short (likely an alias) or different from table name
+            if len(alias) <= 3 or alias.lower() != table.lower():
+                alias_to_table[alias] = table
+                print(f"   Found: {alias} → {table}")
+        
+        if not alias_to_table:
+            return sql
+        
+        # Replace alias.column with Table.column
+        result = sql
+        for alias, table in alias_to_table.items():
+            result = re.sub(
+                rf'\b{re.escape(alias)}\.(\w+)',
+                rf'{table}.\1',
+                result,
+                flags=re.IGNORECASE
+            )
+        
+        # Remove alias declarations
+        result = re.sub(
+            r'(FROM|JOIN)\s+(\w+)\s+(?:AS\s+)?[a-zA-Z]{1,3}(?=\s|$|JOIN|WHERE|ON)',
+            r'\1 \2',
+            result,
+            flags=re.IGNORECASE
+        )
+        
+        print(f"   Result: {result}")
+        return result
+    
     def generate_sql_from_question(self, question, db_path):
         """Enhanced SQL generation with ChromaDB retrieval and template manager - ENHANCED"""
         self.generation_stats['total_queries'] += 1
@@ -1559,7 +1805,7 @@ Use the above examples as reference for generating accurate SQL queries.
             try:
                 print(f"Using {self.prompt_type.value} prompting with ChromaDB retrieval...")
                 
-                # Format retrieved examples for prompt - NEW FUNCTIONALITY
+                # Format retrieved examples for prompt
                 retrieved_examples_text = ""
                 if similar_examples:
                     retrieved_examples_text = "Similar examples from database:\n"
@@ -1581,14 +1827,22 @@ Use the above examples as reference for generating accurate SQL queries.
                 cleaned_sql = self._clean_sql_result(result)
                 print(f"Cleaned SQL: {cleaned_sql}")
                 
-                # Enhanced validation with template manager
+                #no_alias_sql = self._remove_all_aliases(cleaned_sql, schema_info)
+                
+                #if no_alias_sql is None:
+                    #print("Failed to process SQL, using fallback")
+                    #return self._pattern_generate_sql(question, schema_info)
+                
+                # Then validate and enhance (uses no_alias_sql, not cleaned_sql)
+                #validated_sql = self._validate_and_enhance_sql(no_alias_sql, schema_info, question)
                 validated_sql = self._validate_and_enhance_sql(cleaned_sql, schema_info, question)
                 
+                #if validated_sql != no_alias_sql:
                 if validated_sql != cleaned_sql:
                     self.generation_stats['template_corrections'] += 1
                     print(f"Template correction applied: {validated_sql}")
                 
-                # Check if retrieval helped - NEW FUNCTIONALITY
+                # Check if retrieval helped
                 if similar_examples and self._sql_seems_better_with_retrieval(validated_sql, similar_examples):
                     self.retrieval_stats['retrieval_helped'] += 1
                 
@@ -1601,7 +1855,7 @@ Use the above examples as reference for generating accurate SQL queries.
                 if self.enable_debugging:
                     import traceback
                     traceback.print_exc()
-        
+
         # Fallback to enhanced pattern matching with ChromaDB
         print("Using enhanced pattern matching with ChromaDB fallback...")
         self.generation_stats['pattern_fallbacks'] += 1
