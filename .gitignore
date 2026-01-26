@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 
 # ignore all data in data folder
+data/raw/*
 spider_data/*
 !spider_data/.gitkeep
 
