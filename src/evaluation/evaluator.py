@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Tuple
 from tqdm import tqdm
 
 from utils.sql_schema import Schema, get_schema
-from src.data.sql_parser import parse_sql
+from src.data.sql_parser import parse_sql as get_sql  # Alias for compatibility
 from src.evaluation.base_evaluator import BaseEvaluator
 from src.evaluation.hardness import eval_hardness
 from src.evaluation.sql_rebuilder import (
@@ -22,7 +22,7 @@ logger = get_logger(__name__)
 
 # Try to import execution evaluator
 try:
-    from exec_eval import eval_exec_match
+    from src.evaluation.exec_evaluator import eval_exec_match
     EXEC_EVAL_AVAILABLE = True
 except ImportError:
     EXEC_EVAL_AVAILABLE = False
