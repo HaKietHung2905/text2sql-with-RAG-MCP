@@ -5,6 +5,7 @@ __pycache__/
 
 # ignore all data in data folder
 data/raw/*
+data/embeddings/*
 spider_data/*
 !spider_data/.gitkeep
 
