@@ -219,6 +219,8 @@ marimo/_lsp/
 __marimo__/
 
 
-# Ignore data and questions folders
-data/
-questions/
+# Ignore data and questions contents but keep directories
+data/**/*
+!data/**/.gitkeep
+questions/*
+!questions/.gitkeep
